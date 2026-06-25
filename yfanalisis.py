@@ -51,14 +51,37 @@ html, body, [class*="css"] {
 """, unsafe_allow_html=True)
 
 # =========================================================
-# FILE UNTUK WATCHLIST LOKAL
+# LOCAL STORAGE (WATCHLIST)
 # =========================================================
 WATCHLIST_FILE = "watchlist.json"
 
-# =========================================================
-# FUNGSI MANAJEMEN WATCHLIST (Google Sheets + Lokal)
-# =========================================================
+def save_watchlist_local(watchlist):
+    """Simpan watchlist ke file JSON lokal"""
+    try:
+        with open(WATCHLIST_FILE, 'w') as f:
+            json.dump({
+                'watchlist': watchlist,
+                'updated': datetime.now().isoformat()
+            }, f)
+        return True
+    except Exception as e:
+        print(f"Error saving local: {e}")
+        return False
 
+def load_watchlist_local():
+    """Load watchlist dari file JSON lokal"""
+    try:
+        if os.path.exists(WATCHLIST_FILE):
+            with open(WATCHLIST_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('watchlist', [])
+    except Exception as e:
+        print(f"Error loading local: {e}")
+    return None
+
+# =========================================================
+# GOOGLE SHEETS
+# =========================================================
 @st.cache_resource
 def load_sheet():
     try:
@@ -76,29 +99,6 @@ def load_sheet():
         st.warning(f"⚠️ Google Sheets Error: {e}")
         return None
 
-def load_watchlist_from_file():
-    """Load dari file JSON lokal"""
-    try:
-        if os.path.exists(WATCHLIST_FILE):
-            with open(WATCHLIST_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('watchlist', [])
-    except:
-        pass
-    return None
-
-def save_watchlist_to_file(watchlist):
-    """Save ke file JSON lokal"""
-    try:
-        with open(WATCHLIST_FILE, 'w') as f:
-            json.dump({
-                'watchlist': watchlist,
-                'updated': datetime.now().isoformat()
-            }, f)
-        return True
-    except:
-        return False
-
 def get_watchlist():
     """
     Ambil watchlist dengan prioritas:
@@ -107,70 +107,53 @@ def get_watchlist():
     3. Default
     """
     # Coba dari Google Sheets
-    try:
-        sheet = load_sheet()
-        if sheet:
+    sheet = load_sheet()
+    if sheet:
+        try:
             symbols = sheet.col_values(1)
             watchlist = [x.strip().upper() for x in symbols if x.strip()]
             if watchlist:
                 # Simpan ke lokal sebagai backup
-                save_watchlist_to_file(watchlist)
+                save_watchlist_local(watchlist)
                 return watchlist
-    except:
-        pass
+        except:
+            pass
     
-    # Coba dari file lokal
-    local_watchlist = load_watchlist_from_file()
+    # Coba dari local file
+    local_watchlist = load_watchlist_local()
     if local_watchlist:
         return local_watchlist
     
     # Default
     default = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
-    save_watchlist_to_file(default)
+    save_watchlist_local(default)
     return default
 
 def save_watchlist(watchlist):
     """Simpan ke Google Sheets dan lokal"""
     # Simpan ke lokal dulu
-    save_watchlist_to_file(watchlist)
+    save_watchlist_local(watchlist)
     
     # Coba ke Google Sheets
-    try:
-        sheet = load_sheet()
-        if sheet:
+    sheet = load_sheet()
+    if sheet:
+        try:
             # Clear existing
             sheet.clear()
             # Write new
             for coin in watchlist:
                 sheet.append_row([coin])
             return True
-    except Exception as e:
-        st.warning(f"⚠️ Gagal sync ke Google Sheets: {e}")
+        except Exception as e:
+            st.warning(f"⚠️ Gagal sync ke Google Sheets: {e}")
     
     return True
 
-def add_coin_to_watchlist(coin):
-    """Tambah coin ke watchlist"""
-    coin = coin.upper().strip()
-    if coin and coin not in st.session_state.watchlist:
-        st.session_state.watchlist.append(coin)
-        save_watchlist(st.session_state.watchlist)
-        return True
-    return False
-
-def remove_coin_from_watchlist(coin):
-    """Hapus coin dari watchlist"""
-    if coin in st.session_state.watchlist:
-        st.session_state.watchlist.remove(coin)
-        save_watchlist(st.session_state.watchlist)
-        return True
-    return False
-
-def reset_watchlist():
-    """Reset ke default"""
-    default = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
-    st.session_state.watchlist = default.copy()
-    save_watchlist(st.session_state.watchlist)
+# =========================================================
+# TITLE
+# =========================================================
+st.title("🚀 Crypto Smart AI ULTRA++")
+st.caption("Realtime AI Trading Dashboard")
 
 # =========================================================
 # INISIALISASI SESSION STATE
@@ -182,17 +165,11 @@ if "last_alert" not in st.session_state:
     st.session_state.last_alert = {}
 
 # =========================================================
-# TITLE
-# =========================================================
-st.title("🚀 Crypto Smart AI ULTRA++")
-st.caption("Realtime AI Trading Dashboard")
-
-# =========================================================
 # SIDEBAR
 # =========================================================
 st.sidebar.header("⚙️ AI Settings")
 
-# === WATCHLIST DI SIDEBAR ===
+# === WATCHLIST MANAGER ===
 st.sidebar.subheader("📋 Watchlist")
 
 # Tampilkan status storage
@@ -202,42 +179,38 @@ if sheet:
 else:
     st.sidebar.warning("⚠️ Local Storage Only")
 
-st.sidebar.write(f"**Total Coins:** {len(st.session_state.watchlist)}")
-
-# Tambah coin di sidebar
-new_coin = st.sidebar.text_input("Tambah Coin", placeholder="Contoh: PEPE")
+# Tambah coin
+new_coin = st.sidebar.text_input("Tambah Coin")
 if st.sidebar.button("➕ Add Coin"):
     if new_coin:
-        if add_coin_to_watchlist(new_coin):
-            st.sidebar.success(f"✅ {new_coin.upper()} added!")
+        new_coin = new_coin.upper().strip()
+        if new_coin not in st.session_state.watchlist:
+            st.session_state.watchlist.append(new_coin)
+            save_watchlist(st.session_state.watchlist)
+            st.sidebar.success(f"✅ {new_coin} added!")
             st.rerun()
         else:
-            st.sidebar.warning(f"⚠️ {new_coin.upper()} already exists!")
+            st.sidebar.warning(f"⚠️ {new_coin} already exists!")
 
-# Tampilkan watchlist di sidebar
+# Tampilkan watchlist
 st.sidebar.write("---")
-st.sidebar.write("**📌 Watchlist:**")
+st.sidebar.write("**Watchlist:**")
 for coin in st.session_state.watchlist:
     st.sidebar.write(f"• {coin}")
 
-# Delete coin di sidebar
+# Delete coin
 if len(st.session_state.watchlist) > 0:
     st.sidebar.write("---")
     delete_coin = st.sidebar.selectbox("Delete Coin", st.session_state.watchlist)
-    if st.sidebar.button("❌ Delete", use_container_width=True):
-        if remove_coin_from_watchlist(delete_coin):
+    if st.sidebar.button("❌ Delete"):
+        if delete_coin in st.session_state.watchlist:
+            st.session_state.watchlist.remove(delete_coin)
+            save_watchlist(st.session_state.watchlist)
             st.sidebar.success(f"✅ {delete_coin} removed!")
             st.rerun()
 
-# Tombol reset
-if st.sidebar.button("🔄 Reset to Default", use_container_width=True):
-    reset_watchlist()
-    st.rerun()
-
 # === SETTINGS ===
 st.sidebar.write("---")
-st.sidebar.header("⚙️ Settings")
-
 refresh = st.sidebar.slider("Refresh (detik)", 2, 60, 5)
 currency_mode = st.sidebar.selectbox("💱 Currency", ["USD", "IDR"])
 timeframe = st.sidebar.selectbox(
@@ -260,9 +233,16 @@ def send_telegram(message):
     except Exception as e:
         print(e)
 
-if st.sidebar.button("🚀 Test Telegram", use_container_width=True):
+if st.sidebar.button("🚀 Test Telegram"):
     send_telegram("🚀 Telegram Connected!")
     st.sidebar.success("✅ Pesan test terkirim!")
+
+# === STATUS ===
+st.sidebar.write("---")
+st.sidebar.subheader("📊 Status")
+st.sidebar.write(f"**Total Coins:** {len(st.session_state.watchlist)}")
+st.sidebar.write(f"**Auto Refresh:** {refresh} detik")
+st.sidebar.write(f"**Storage:** {'Google Sheets + Local' if sheet else 'Local Only'}")
 
 # =========================================================
 # AUTO REFRESH
@@ -431,15 +411,16 @@ def ai_signal(price, ema20, ema50, rsi):
 # MAIN LOOP
 # =========================================================
 
-# Konversi watchlist ke format yfinance
+# Gunakan watchlist dari session state (sudah tersimpan permanen)
 symbols = st.session_state.watchlist
 coins = [smart_symbol(x) for x in symbols]
 
 # Tampilkan status di sidebar
 st.sidebar.write("---")
+st.sidebar.write(f"📊 Total Coins: {len(symbols)}")
 st.sidebar.write(f"💾 Storage: {'Google Sheets + Local' if sheet else 'Local Only'}")
 
-# Progress bar untuk loading
+# Progress bar
 if len(coins) > 0:
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -715,6 +696,6 @@ if len(coins) > 0:
 # =========================================================
 st.caption(
     f"🚀 Crypto Smart AI ULTRA++ | Currency Mode: {currency_mode} | "
-    f"Total Coins: {len(st.session_state.watchlist)} | "
+    f"Total Coins: {len(symbols)} | "
     f"Storage: {'Google Sheets + Local' if sheet else 'Local Only'}"
 )
