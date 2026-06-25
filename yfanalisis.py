@@ -1,103 +1,160 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
-from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
+import json
+import os
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
-st.set_page_config(page_title="gas", layout="wide")
+st.set_page_config(
+    page_title="🚀 Crypto Smart AI ULTRA++",
+    layout="wide"
+)
 
 # =========================================================
-# CSS KUSTOM
+# CSS
 # =========================================================
 st.markdown("""
 <style>
-    .stButton > button {
-        width: 100%;
-        background: linear-gradient(145deg, #00ff88, #00cc66);
-        color: black;
-        font-weight: bold;
-        border: none;
-        border-radius: 8px;
-        padding: 10px 24px;
-        transition: all 0.3s ease;
-    }
-    .stButton > button:hover {
-        transform: scale(1.02);
-        box-shadow: 0 0 20px rgba(0,255,136,0.3);
-    }
-    .coin-badge {
-        display: inline-block;
-        background: rgba(0,255,136,0.1);
-        border: 1px solid rgba(0,255,136,0.3);
-        border-radius: 20px;
-        padding: 4px 14px;
-        margin: 3px;
-        font-size: 14px;
-        color: #00ff88;
-    }
-    .delete-btn {
-        background: rgba(255,59,92,0.15) !important;
-        border: 1px solid rgba(255,59,92,0.3) !important;
-        color: #ff3b5c !important;
-        padding: 2px 12px !important;
-        font-size: 12px !important;
-        border-radius: 12px !important;
-        cursor: pointer;
-    }
-    .delete-btn:hover {
-        background: rgba(255,59,92,0.3) !important;
-    }
+html, body, [class*="css"] {
+    background-color: #050816;
+    color: white;
+}
+
+[data-testid="stMetric"] {
+    background: linear-gradient(145deg, #0b1220, #111827);
+    border: 1px solid #1e293b;
+    padding: 10px;
+    border-radius: 14px;
+    box-shadow: 0 0 15px rgba(0,255,255,0.08);
+    text-align: center;
+}
+
+[data-testid="stMetricLabel"] {
+    font-size: 13px;
+    color: #94a3b8;
+}
+
+[data-testid="stMetricValue"] {
+    font-size: 22px;
+    font-weight: bold;
+}
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# GOOGLE SHEETS (DENGAN FALLBACK KE SESSION STATE)
+# FILE UNTUK WATCHLIST LOKAL
 # =========================================================
+WATCHLIST_FILE = "watchlist.json"
+
+# =========================================================
+# FUNGSI MANAJEMEN WATCHLIST (Google Sheets + Lokal)
+# =========================================================
+
 @st.cache_resource
 def load_sheet():
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(dict(st.secrets["gcp_service_account"]), scope)
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            dict(st.secrets["gcp_service_account"]),
+            scope
+        )
         client = gspread.authorize(creds)
         return client.open("CryptoWatchlist").sheet1
-    except:
+    except Exception as e:
+        st.warning(f"⚠️ Google Sheets Error: {e}")
         return None
 
-# Inisialisasi session state untuk watchlist
-if "watchlist" not in st.session_state:
-    sheet = load_sheet()
-    if sheet:
-        try:
-            symbols = sheet.col_values(1)
-            st.session_state.watchlist = [x.strip().upper() for x in symbols if x.strip()]
-        except:
-            st.session_state.watchlist = ["BTC"]
-    else:
-        st.session_state.watchlist = ["BTC"]
+def load_watchlist_from_file():
+    """Load dari file JSON lokal"""
+    try:
+        if os.path.exists(WATCHLIST_FILE):
+            with open(WATCHLIST_FILE, 'r') as f:
+                data = json.load(f)
+                return data.get('watchlist', [])
+    except:
+        pass
+    return None
 
-# =========================================================
-# FUNGSI MANAJEMEN WATCHLIST
-# =========================================================
+def save_watchlist_to_file(watchlist):
+    """Save ke file JSON lokal"""
+    try:
+        with open(WATCHLIST_FILE, 'w') as f:
+            json.dump({
+                'watchlist': watchlist,
+                'updated': datetime.now().isoformat()
+            }, f)
+        return True
+    except:
+        return False
+
+def get_watchlist():
+    """
+    Ambil watchlist dengan prioritas:
+    1. Google Sheets
+    2. Local JSON (backup)
+    3. Default
+    """
+    # Coba dari Google Sheets
+    try:
+        sheet = load_sheet()
+        if sheet:
+            symbols = sheet.col_values(1)
+            watchlist = [x.strip().upper() for x in symbols if x.strip()]
+            if watchlist:
+                # Simpan ke lokal sebagai backup
+                save_watchlist_to_file(watchlist)
+                return watchlist
+    except:
+        pass
+    
+    # Coba dari file lokal
+    local_watchlist = load_watchlist_from_file()
+    if local_watchlist:
+        return local_watchlist
+    
+    # Default
+    default = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
+    save_watchlist_to_file(default)
+    return default
+
+def save_watchlist(watchlist):
+    """Simpan ke Google Sheets dan lokal"""
+    # Simpan ke lokal dulu
+    save_watchlist_to_file(watchlist)
+    
+    # Coba ke Google Sheets
+    try:
+        sheet = load_sheet()
+        if sheet:
+            # Clear existing
+            sheet.clear()
+            # Write new
+            for coin in watchlist:
+                sheet.append_row([coin])
+            return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal sync ke Google Sheets: {e}")
+    
+    return True
+
 def add_coin_to_watchlist(coin):
     """Tambah coin ke watchlist"""
     coin = coin.upper().strip()
     if coin and coin not in st.session_state.watchlist:
         st.session_state.watchlist.append(coin)
-        
-        # Simpan ke Google Sheets jika tersedia
-        sheet = load_sheet()
-        if sheet:
-            try:
-                sheet.append_row([coin])
-            except:
-                pass
+        save_watchlist(st.session_state.watchlist)
         return True
     return False
 
@@ -105,111 +162,93 @@ def remove_coin_from_watchlist(coin):
     """Hapus coin dari watchlist"""
     if coin in st.session_state.watchlist:
         st.session_state.watchlist.remove(coin)
-        
-        # Hapus dari Google Sheets jika tersedia
-        sheet = load_sheet()
-        if sheet:
-            try:
-                cell = sheet.find(coin)
-                if cell:
-                    sheet.delete_rows(cell.row)
-            except:
-                pass
+        save_watchlist(st.session_state.watchlist)
         return True
     return False
 
 def reset_watchlist():
-    """Reset watchlist ke default"""
-    default = ["BTC"]
+    """Reset ke default"""
+    default = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
     st.session_state.watchlist = default.copy()
-    
-    # Update Google Sheets
-    sheet = load_sheet()
-    if sheet:
-        try:
-            sheet.clear()
-            for coin in default:
-                sheet.append_row([coin])
-        except:
-            pass
+    save_watchlist(st.session_state.watchlist)
+
+# =========================================================
+# INISIALISASI SESSION STATE
+# =========================================================
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = get_watchlist()
+
+if "last_alert" not in st.session_state:
+    st.session_state.last_alert = {}
 
 # =========================================================
 # TITLE
 # =========================================================
-st.title("gas")
-st.caption("1H Trend | 15M S/R | 5M Entry")
+st.title("🚀 Crypto Smart AI ULTRA++")
+st.caption("Realtime AI Trading Dashboard")
 
 # =========================================================
-# DASHBOARD: MANAJEMEN WATCHLIST
+# SIDEBAR
 # =========================================================
-with st.expander("📋 Manage Watchlist", expanded=True):
-    col1, col2, col3 = st.columns([2, 1, 1])
-    
-    with col1:
-        # Form untuk tambah coin
-        with st.form(key="add_coin_form", clear_on_submit=True):
-            input_col1, input_col2 = st.columns([3, 1])
-            with input_col1:
-                new_coin_input = st.text_input(
-                    "Tambah Coin",
-                    placeholder="Contoh: PEPE, DOT, MATIC",
-                    label_visibility="collapsed"
-                )
-            with input_col2:
-                submit_button = st.form_submit_button("➕ Add Coin", use_container_width=True)
-            
-            if submit_button and new_coin_input:
-                if add_coin_to_watchlist(new_coin_input):
-                    st.success(f"✅ {new_coin_input.upper()} added to watchlist!")
-                    st.rerun()
-                else:
-                    st.warning(f"⚠️ {new_coin_input.upper()} already in watchlist or invalid")
-    
-    with col2:
-        # Tombol reset
-        if st.button("🔄 Reset to Default", use_container_width=True):
-            reset_watchlist()
-            st.rerun()
-    
-    with col3:
-        # Tombol refresh data
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-    
-    # Tampilkan watchlist saat ini dengan badge
-    st.markdown("---")
-    st.markdown("**📌 Watchlist Saat Ini:**")
-    
-    if st.session_state.watchlist:
-        # Tampilkan coin dalam baris
-        cols = st.columns(min(len(st.session_state.watchlist), 6))
-        for idx, coin in enumerate(st.session_state.watchlist):
-            col_idx = idx % len(cols)
-            with cols[col_idx]:
-                # Tampilkan badge dengan tombol delete
-                col_coin, col_del = st.columns([4, 1])
-                with col_coin:
-                    st.markdown(f'<span class="coin-badge">💎 {coin}</span>', unsafe_allow_html=True)
-                with col_del:
-                    if st.button("✕", key=f"del_{coin}", help=f"Hapus {coin}"):
-                        remove_coin_from_watchlist(coin)
-                        st.rerun()
-    else:
-        st.info("Watchlist kosong. Tambahkan coin di atas!")
+st.sidebar.header("⚙️ AI Settings")
 
-# =========================================================
-# SIDEBAR SETTINGS
-# =========================================================
-st.sidebar.header("⚙️ Settings")
+# === WATCHLIST DI SIDEBAR ===
+st.sidebar.subheader("📋 Watchlist")
+
+# Tampilkan status storage
+sheet = load_sheet()
+if sheet:
+    st.sidebar.success("✅ Google Sheets Connected")
+else:
+    st.sidebar.warning("⚠️ Local Storage Only")
+
+st.sidebar.write(f"**Total Coins:** {len(st.session_state.watchlist)}")
+
+# Tambah coin di sidebar
+new_coin = st.sidebar.text_input("Tambah Coin", placeholder="Contoh: PEPE")
+if st.sidebar.button("➕ Add Coin"):
+    if new_coin:
+        if add_coin_to_watchlist(new_coin):
+            st.sidebar.success(f"✅ {new_coin.upper()} added!")
+            st.rerun()
+        else:
+            st.sidebar.warning(f"⚠️ {new_coin.upper()} already exists!")
+
+# Tampilkan watchlist di sidebar
+st.sidebar.write("---")
+st.sidebar.write("**📌 Watchlist:**")
+for coin in st.session_state.watchlist:
+    st.sidebar.write(f"• {coin}")
+
+# Delete coin di sidebar
+if len(st.session_state.watchlist) > 0:
+    st.sidebar.write("---")
+    delete_coin = st.sidebar.selectbox("Delete Coin", st.session_state.watchlist)
+    if st.sidebar.button("❌ Delete", use_container_width=True):
+        if remove_coin_from_watchlist(delete_coin):
+            st.sidebar.success(f"✅ {delete_coin} removed!")
+            st.rerun()
+
+# Tombol reset
+if st.sidebar.button("🔄 Reset to Default", use_container_width=True):
+    reset_watchlist()
+    st.rerun()
 
 # === SETTINGS ===
-refresh = st.sidebar.slider("Refresh (detik)", 5, 60, 10)
-currency = st.sidebar.selectbox("Currency", ["USD", "IDR"])
-leverage = st.sidebar.slider("Leverage", 1, 125, 10)
-position_size = st.sidebar.number_input("Position Size (USD)", 10, 100000, 100)
+st.sidebar.write("---")
+st.sidebar.header("⚙️ Settings")
+
+refresh = st.sidebar.slider("Refresh (detik)", 2, 60, 5)
+currency_mode = st.sidebar.selectbox("💱 Currency", ["USD", "IDR"])
+timeframe = st.sidebar.selectbox(
+    "Timeframe",
+    ["1m", "5m", "15m", "30m", "1h", "4h", "1d", "1wk", "1mo"],
+    index=2
+)
+limit = st.sidebar.slider("Historical Candle", 50, 500, 120)
 
 # === TELEGRAM ===
+st.sidebar.write("---")
 st.sidebar.subheader("📱 Telegram Alert")
 BOT_TOKEN = "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU"
 CHAT_ID = "999556266"
@@ -218,23 +257,17 @@ def send_telegram(message):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except:
-        pass
+    except Exception as e:
+        print(e)
 
 if st.sidebar.button("🚀 Test Telegram", use_container_width=True):
     send_telegram("🚀 Telegram Connected!")
     st.sidebar.success("✅ Pesan test terkirim!")
 
-# === STATUS ===
-st.sidebar.subheader("📊 Status")
-st.sidebar.write(f"**Total Coins:** {len(st.session_state.watchlist)}")
-st.sidebar.write(f"**Auto Refresh:** {refresh} detik")
-
 # =========================================================
 # AUTO REFRESH
 # =========================================================
-from streamlit_autorefresh import st_autorefresh
-st_autorefresh(interval=refresh*1000, key="refresh")
+st_autorefresh(interval=refresh * 1000, key="refresh")
 
 # =========================================================
 # USD TO IDR
@@ -250,8 +283,13 @@ def get_usd_idr():
         return 16000
 
 usd_to_idr = get_usd_idr()
-currency_rate = usd_to_idr if currency == "IDR" else 1
-currency_symbol = "Rp" if currency == "IDR" else "$"
+
+if currency_mode == "IDR":
+    currency_rate = usd_to_idr
+    currency_symbol = "Rp"
+else:
+    currency_rate = 1
+    currency_symbol = "$"
 
 # =========================================================
 # FORMAT PRICE
@@ -271,48 +309,79 @@ def format_price(value, symbol):
         return f"$ {value:,.8f}"
 
 # =========================================================
-# FUNGSI AMBIL DATA
+# TIMEFRAME MAP
+# =========================================================
+yf_map = {
+    "1m": ("1m", "1d"),
+    "5m": ("5m", "5d"),
+    "15m": ("15m", "15d"),
+    "30m": ("30m", "30d"),
+    "1h": ("1h", "60d"),
+    "4h": ("1h", "180d"),
+    "1d": ("1d", "1y"),
+    "1wk": ("1wk", "5y"),
+    "1mo": ("1mo", "10y")
+}
+
+# =========================================================
+# SYMBOL FIX
+# =========================================================
+def smart_symbol(symbol):
+    symbol = symbol.upper().replace(" ", "")
+    return f"{symbol}-USD"
+
+# =========================================================
+# GET DATA
 # =========================================================
 @st.cache_data(ttl=30)
-def get_data(symbol, interval, period):
+def get_data(symbol, timeframe, limit):
     try:
-        ticker = f"{symbol}-USD"
-        df = yf.download(ticker, interval=interval, period=period, progress=False)
-        if df.empty:
-            ticker = symbol
-            df = yf.download(ticker, interval=interval, period=period, progress=False)
+        interval, period = yf_map[timeframe]
+        df = yf.download(
+            tickers=symbol,
+            interval=interval,
+            period=period,
+            progress=False,
+            auto_adjust=False
+        )
+
         if df.empty:
             return None
+
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
+
         df = df.reset_index()
-        df.rename(columns={df.columns[0]: "Time"}, inplace=True)
+        first_col = df.columns[0]
+        df.rename(columns={first_col: "Time"}, inplace=True)
+        df = df.dropna()
+
         df["Time"] = pd.to_datetime(df["Time"])
-        return df
-    except:
+        try:
+            df["Time"] = df["Time"].dt.tz_convert("Asia/Jakarta")
+        except:
+            df["Time"] = df["Time"] + pd.Timedelta(hours=7)
+
+        if timeframe == "4h":
+            df = df.set_index("Time").resample("4h").agg({
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum"
+            }).dropna().reset_index()
+
+        return df.tail(limit)
+
+    except Exception as e:
+        st.error(f"{symbol} ERROR: {e}")
         return None
 
-def get_data_safe(symbol, interval, min_candles=20):
-    periods = {
-        "1m": ["1d", "5d", "7d"],
-        "5m": ["2d", "5d", "7d", "14d"],
-        "15m": ["5d", "7d", "14d", "30d"],
-        "30m": ["7d", "14d", "30d"],
-        "1h": ["7d", "14d", "30d", "60d"],
-        "4h": ["14d", "30d", "60d"],
-        "1d": ["30d", "60d", "90d", "1y"],
-    }
-    for period in periods.get(interval, ["7d", "14d", "30d"]):
-        df = get_data(symbol, interval, period)
-        if df is not None and len(df) >= min_candles:
-            return df
-    return None
-
 # =========================================================
-# INDIKATOR TEKNIKAL
+# INDIKATOR
 # =========================================================
-def EMA(df, col="Close", period=20):
-    return df[col].ewm(span=period, adjust=False).mean()
+def EMA(df, period):
+    return df["Close"].ewm(span=period, adjust=False).mean()
 
 def RSI(df, period=14):
     delta = df["Close"].diff()
@@ -323,310 +392,329 @@ def RSI(df, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def ATR(df, period=14):
-    high_low = df["High"] - df["Low"]
-    high_close = abs(df["High"] - df["Close"].shift())
-    low_close = abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+def MACD(df):
+    ema12 = EMA(df, 12)
+    ema26 = EMA(df, 26)
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist = macd - signal
+    return macd, signal, hist
 
-def ADX(df, period=14):
-    try:
-        high = df["High"]
-        low = df["Low"]
-        close = df["Close"]
-        plus_dm = high.diff()
-        minus_dm = low.diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
-        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-        minus_di = 100 * (minus_dm.abs().rolling(period).mean() / atr)
-        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-        return dx.rolling(period).mean()
-    except:
-        return pd.Series([0] * len(df))
+def support_resistance(df):
+    support1 = float(df["Low"].tail(20).min())
+    support2 = float(df["Low"].tail(50).min())
+    resistance1 = float(df["High"].tail(20).max())
+    resistance2 = float(df["High"].tail(50).max())
+    return support1, support2, resistance1, resistance2
 
-# =========================================================
-# ANALISIS MULTI TIMEFRAME
-# =========================================================
-def analyze_mtf(symbol):
-    # --- 1H TREND ---
-    df_1h = get_data_safe(symbol, "1h", min_candles=30)
-    if df_1h is None:
-        return None
-    
-    # --- 15M S/R ---
-    df_15m = get_data_safe(symbol, "15m", min_candles=50)
-    if df_15m is None:
-        df_15m = df_1h.copy()
-    
-    # --- 5M ENTRY ---
-    df_5m = get_data_safe(symbol, "5m", min_candles=20)
-    if df_5m is None:
-        df_5m = df_15m.copy()
-    
-    # --- 1H TREND ---
-    df_1h["EMA20"] = EMA(df_1h)
-    df_1h["EMA50"] = EMA(df_1h, period=50)
-    df_1h["ADX"] = ADX(df_1h)
-    
-    last = df_1h.iloc[-1]
-    price_1h = last["Close"]
-    ema20 = last["EMA20"] if not pd.isna(last["EMA20"]) else price_1h
-    ema50 = last["EMA50"] if not pd.isna(last["EMA50"]) else price_1h
-    adx = last["ADX"] if not pd.isna(last["ADX"]) else 0
-    
-    if price_1h > ema20 > ema50 and adx > 25:
-        trend = "🟢 BULLISH (Strong)"
-    elif price_1h > ema20 > ema50:
-        trend = "🟢 BULLISH"
-    elif price_1h < ema20 < ema50 and adx > 25:
-        trend = "🔴 BEARISH (Strong)"
-    elif price_1h < ema20 < ema50:
-        trend = "🔴 BEARISH"
+def ai_signal(price, ema20, ema50, rsi):
+    score = 0
+    if price > ema20:
+        score += 25
+    if ema20 > ema50:
+        score += 25
+    if rsi > 55:
+        score += 25
+    if rsi > 65:
+        score += 25
+
+    if score >= 75:
+        return "🚀 STRONG BUY", score
+    elif score >= 50:
+        return "🟢 BUY", score
+    elif score <= 25:
+        return "🔴 SELL", score
     else:
-        trend = "🟡 SIDEWAYS"
-    
-    # --- 15M SUPPORT/RESISTANCE ---
-    period = 20
-    recent_high = df_15m["High"].tail(period).max()
-    recent_low = df_15m["Low"].tail(period).min()
-    pivot = (df_15m["High"].tail(period).max() + df_15m["Low"].tail(period).min() + df_15m["Close"].tail(period).mean()) / 3
-    r1 = 2 * pivot - recent_low
-    s1 = 2 * pivot - recent_high
-    
-    support = s1
-    resistance = r1
-    
-    # --- 5M ENTRY SIGNAL ---
-    df_5m["RSI"] = RSI(df_5m, period=14)
-    df_5m["EMA10"] = EMA(df_5m, period=10)
-    df_5m["Volume_MA"] = df_5m["Volume"].rolling(5).mean()
-    
-    last_5m = df_5m.iloc[-1]
-    price_5m = last_5m["Close"]
-    rsi_5m = last_5m["RSI"] if not pd.isna(last_5m["RSI"]) else 50
-    vol = last_5m["Volume"]
-    vol_ma = last_5m["Volume_MA"] if not pd.isna(last_5m["Volume_MA"]) else vol
-    vol_spike = vol > vol_ma * 1.5 if vol_ma > 0 else False
-    
-    entry_signal = None
-    is_bullish = "BULLISH" in trend
-    is_bearish = "BEARISH" in trend
-    
-    if is_bullish:
-        if price_5m > support and rsi_5m < 45:
-            entry_signal = "🟢 BUY (Pullback to Support)"
-        elif price_5m > resistance and vol_spike:
-            entry_signal = "🟢 BUY (Breakout)"
-    elif is_bearish:
-        if price_5m < resistance and rsi_5m > 55:
-            entry_signal = "🔴 SELL (Pullback to Resistance)"
-        elif price_5m < support and vol_spike:
-            entry_signal = "🔴 SELL (Breakdown)"
-    else:
-        if price_5m > resistance and vol_spike:
-            entry_signal = "🟢 BUY (Breakout)"
-        elif price_5m < support and vol_spike:
-            entry_signal = "🔴 SELL (Breakdown)"
-    
-    atr_5m = ATR(df_5m, period=14).iloc[-1] if len(df_5m) > 14 else (df_5m["High"].iloc[-1] - df_5m["Low"].iloc[-1])
-    atr_5m = atr_5m if not pd.isna(atr_5m) else 0.01
-    
-    if entry_signal and "BUY" in entry_signal:
-        entry_price = price_5m
-        stop_loss = entry_price - atr_5m * 2
-        take_profit = entry_price + atr_5m * 4
-    elif entry_signal and "SELL" in entry_signal:
-        entry_price = price_5m
-        stop_loss = entry_price + atr_5m * 2
-        take_profit = entry_price - atr_5m * 4
-    else:
-        entry_price = stop_loss = take_profit = None
-    
-    return {
-        "symbol": symbol,
-        "trend": trend,
-        "support": support,
-        "resistance": resistance,
-        "entry_signal": entry_signal,
-        "entry_price": entry_price,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "rsi_5m": rsi_5m,
-        "adx_1h": adx,
-        "price": price_5m,
-        "df_1h": df_1h.tail(50),
-        "df_15m": df_15m.tail(50),
-        "df_5m": df_5m.tail(30)
-    }
+        return "📊 WAIT", score
 
 # =========================================================
-# MAIN LOOP - TAMPILKAN SEMUA COIN
+# MAIN LOOP
 # =========================================================
-if "last_alert" not in st.session_state:
-    st.session_state.last_alert = {}
 
-# Cek apakah watchlist kosong
-if not st.session_state.watchlist:
-    st.warning("⚠️ Watchlist kosong! Tambahkan coin di bagian 'Manage Watchlist'")
-    st.stop()
+# Konversi watchlist ke format yfinance
+symbols = st.session_state.watchlist
+coins = [smart_symbol(x) for x in symbols]
+
+# Tampilkan status di sidebar
+st.sidebar.write("---")
+st.sidebar.write(f"💾 Storage: {'Google Sheets + Local' if sheet else 'Local Only'}")
 
 # Progress bar untuk loading
-progress_bar = st.progress(0)
-status_text = st.empty()
+if len(coins) > 0:
+    progress_bar = st.progress(0)
+    status_text = st.empty()
 
-for idx, sym in enumerate(st.session_state.watchlist):
-    # Update progress
-    progress_bar.progress((idx + 1) / len(st.session_state.watchlist))
-    status_text.text(f"🔄 Menganalisis {sym}...")
+for idx, symbol in enumerate(coins):
+    if len(coins) > 0:
+        progress_bar.progress((idx + 1) / len(coins))
+        status_text.text(f"🔄 Menganalisis {symbol}...")
     
-    with st.container():
-        st.divider()
-        st.subheader(f"📈 {sym}")
-        
-        result = analyze_mtf(sym)
-        if result is None:
-            st.warning(f"⚠️ Data {sym} tidak mencukupi (coba lagi nanti)")
-            continue
-        
-        # Tampilkan metrik
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Trend (1H)", result["trend"])
-        col2.metric("Support (15M)", format_price(result["support"] * currency_rate, currency_symbol))
-        col3.metric("Resistance (15M)", format_price(result["resistance"] * currency_rate, currency_symbol))
-        col4.metric("RSI (5M)", f"{result['rsi_5m']:.1f}")
-        
-        # Entry Signal
-        if result["entry_signal"]:
-            st.success(f"🚀 **{result['entry_signal']}**")
-            
-            col_a, col_b, col_c = st.columns(3)
-            col_a.metric("Entry", format_price(result["entry_price"] * currency_rate, currency_symbol))
-            col_b.metric("Stop Loss", format_price(result["stop_loss"] * currency_rate, currency_symbol), 
-                        delta=f"-{(result['stop_loss']/result['entry_price'] - 1)*100:.1f}%")
-            col_c.metric("Take Profit", format_price(result["take_profit"] * currency_rate, currency_symbol),
-                        delta=f"{(result['take_profit']/result['entry_price'] - 1)*100:.1f}%")
-            
-            # Telegram Alert
-            if sym not in st.session_state.last_alert or st.session_state.last_alert[sym] != result["entry_signal"]:
-                message = f"""⚡ MTF SIGNAL
+    st.divider()
+    st.subheader(f"🤖 {symbol}")
 
-Coin : {sym}
-Signal : {result['entry_signal']}
-Trend : {result['trend']}
+    df = get_data(symbol, timeframe, limit)
 
-Entry : ${result['entry_price']:.4f}
-SL : ${result['stop_loss']:.4f}
-TP : ${result['take_profit']:.4f}
+    if df is None or df.empty:
+        st.warning(f"{symbol} data tidak tersedia")
+        continue
 
-Leverage : {leverage}x
-Position : ${position_size * leverage:,.0f}
+    # Indicators
+    df["EMA20"] = EMA(df, 20)
+    df["EMA50"] = EMA(df, 50)
+    df["RSI"] = RSI(df)
+    df["MACD"], df["MACD_SIGNAL"], df["MACD_HIST"] = MACD(df)
+    df = df.dropna().reset_index(drop=True)
 
-Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-                send_telegram(message)
-                st.session_state.last_alert[sym] = result["entry_signal"]
-        
-        # 3 Chart dalam Tabs
-        tab1, tab2, tab3 = st.tabs(["📊 1H Trend", "📊 15M S/R", "📊 5M Entry"])
-        
-        with tab1:
-            fig1 = go.Figure()
-            fig1.add_trace(go.Candlestick(
-                x=result["df_1h"]["Time"],
-                open=result["df_1h"]["Open"],
-                high=result["df_1h"]["High"],
-                low=result["df_1h"]["Low"],
-                close=result["df_1h"]["Close"],
-                name="1H"
-            ))
-            fig1.add_trace(go.Scatter(
-                x=result["df_1h"]["Time"],
-                y=result["df_1h"]["EMA20"],
-                line=dict(color="cyan", width=1.5), name="EMA20"
-            ))
-            fig1.add_trace(go.Scatter(
-                x=result["df_1h"]["Time"],
-                y=result["df_1h"]["EMA50"],
-                line=dict(color="orange", width=1.5), name="EMA50"
-            ))
-            fig1.update_layout(
-                height=350,
-                template="plotly_dark",
-                xaxis_rangeslider_visible=False,
-                paper_bgcolor="#050816",
-                plot_bgcolor="#0a0a1a"
-            )
-            st.plotly_chart(fig1, use_container_width=True)
-        
-        with tab2:
-            fig2 = go.Figure()
-            fig2.add_trace(go.Candlestick(
-                x=result["df_15m"]["Time"],
-                open=result["df_15m"]["Open"],
-                high=result["df_15m"]["High"],
-                low=result["df_15m"]["Low"],
-                close=result["df_15m"]["Close"],
-                name="15M"
-            ))
-            fig2.add_hline(y=result["support"], line_dash="dot", line_color="green", 
-                          annotation_text=f"S {format_price(result['support']*currency_rate, currency_symbol)}")
-            fig2.add_hline(y=result["resistance"], line_dash="dot", line_color="red",
-                          annotation_text=f"R {format_price(result['resistance']*currency_rate, currency_symbol)}")
-            fig2.update_layout(
-                height=350,
-                template="plotly_dark",
-                xaxis_rangeslider_visible=False,
-                paper_bgcolor="#050816",
-                plot_bgcolor="#0a0a1a"
-            )
-            st.plotly_chart(fig2, use_container_width=True)
-        
-        with tab3:
-            fig3 = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                row_heights=[0.65, 0.35])
-            
-            # Candlestick
-            fig3.add_trace(go.Candlestick(
-                x=result["df_5m"]["Time"],
-                open=result["df_5m"]["Open"],
-                high=result["df_5m"]["High"],
-                low=result["df_5m"]["Low"],
-                close=result["df_5m"]["Close"],
-                name="5M"
-            ), row=1, col=1)
-            
-            # RSI
-            fig3.add_trace(go.Scatter(
-                x=result["df_5m"]["Time"],
-                y=result["df_5m"]["RSI"],
-                line=dict(color="purple", width=1.5), name="RSI"
-            ), row=2, col=1)
-            fig3.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-            fig3.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-            fig3.add_hline(y=50, line_dash="dash", line_color="gray", row=2, col=1)
-            
-            fig3.update_layout(
-                height=400,
-                template="plotly_dark",
-                xaxis_rangeslider_visible=False,
-                paper_bgcolor="#050816",
-                plot_bgcolor="#0a0a1a"
-            )
-            st.plotly_chart(fig3, use_container_width=True)
+    if len(df) < 10:
+        st.warning(f"{symbol} candle terlalu sedikit")
+        continue
+
+    # Last values
+    price = float(df["Close"].iloc[-1]) * currency_rate
+    ema20 = float(df["EMA20"].iloc[-1]) * currency_rate
+    ema50 = float(df["EMA50"].iloc[-1]) * currency_rate
+    rsi = float(df["RSI"].iloc[-1])
+    volume = float(df["Volume"].iloc[-1])
+
+    # Support Resistance
+    s1, s2, r1, r2 = support_resistance(df)
+    s1 *= currency_rate
+    s2 *= currency_rate
+    r1 *= currency_rate
+    r2 *= currency_rate
+
+    # Signal
+    signal, confidence = ai_signal(price, ema20, ema50, rsi)
+
+    # Telegram Alert
+    if symbol not in st.session_state.last_alert:
+        st.session_state.last_alert[symbol] = signal
+    else:
+        last_signal = st.session_state.last_alert[symbol]
+        if signal != last_signal and signal != "📊 WAIT":
+            message = f"""
+🤖 AI SIGNAL
+
+Coin : {symbol}
+Signal : {signal}
+Price : {price:.6f}
+RSI : {rsi:.2f}
+Confidence : {confidence}%
+Timeframe : {timeframe}
+Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+            send_telegram(message)
+            st.session_state.last_alert[symbol] = signal
+
+    # Metrics
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("💰 Price", format_price(price, currency_symbol))
+    c2.metric("📊 RSI", f"{rsi:.2f}")
+    c3.metric("📦 Volume", f"{volume:,.0f}")
+    c4.metric("🤖 Signal", signal)
+    c5.metric("⚡ Confidence", f"{confidence}%")
+
+    # Chart
+    fig = make_subplots(
+        rows=3, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.65, 0.2, 0.15]
+    )
+
+    # Candle
+    fig.add_trace(
+        go.Candlestick(
+            x=df["Time"],
+            open=df["Open"] * currency_rate,
+            high=df["High"] * currency_rate,
+            low=df["Low"] * currency_rate,
+            close=df["Close"] * currency_rate,
+            increasing_line_color="#00ff88",
+            decreasing_line_color="#ff3b5c",
+            name="Candlestick"
+        ),
+        row=1, col=1
+    )
+
+    # EMA20
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["EMA20"] * currency_rate,
+            line=dict(color="#00a2ff", width=2),
+            name="EMA20"
+        ),
+        row=1, col=1
+    )
+
+    # EMA50
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["EMA50"] * currency_rate,
+            line=dict(color="#ffaa00", width=2),
+            name="EMA50"
+        ),
+        row=1, col=1
+    )
+
+    # Support
+    fig.add_hline(
+        y=s1,
+        line_dash="dot",
+        line_color="#00ff88",
+        annotation_text=f"S1 {format_price(s1, currency_symbol)}",
+        row=1, col=1
+    )
+    fig.add_hline(
+        y=s2,
+        line_dash="dash",
+        line_color="green",
+        annotation_text=f"S2 {format_price(s2, currency_symbol)}",
+        row=1, col=1
+    )
+
+    # Resistance
+    fig.add_hline(
+        y=r1,
+        line_dash="dot",
+        line_color="#ff3b5c",
+        annotation_text=f"R1 {format_price(r1, currency_symbol)}",
+        row=1, col=1
+    )
+    fig.add_hline(
+        y=r2,
+        line_dash="dash",
+        line_color="red",
+        annotation_text=f"R2 {format_price(r2, currency_symbol)}",
+        row=1, col=1
+    )
+
+    # Buy Zone
+    fig.add_hrect(
+        y0=s1 * 0.995,
+        y1=s1 * 1.005,
+        fillcolor="green",
+        opacity=0.06,
+        line_width=0,
+        row=1, col=1
+    )
+
+    # Sell Zone
+    fig.add_hrect(
+        y0=r1 * 0.995,
+        y1=r1 * 1.005,
+        fillcolor="red",
+        opacity=0.06,
+        line_width=0,
+        row=1, col=1
+    )
+
+    # Volume Colors
+    colors = ["#00ff88" if c >= o else "#ff3b5c" 
+              for c, o in zip(df["Close"], df["Open"])]
+
+    # Volume
+    fig.add_trace(
+        go.Bar(
+            x=df["Time"],
+            y=df["Volume"],
+            marker_color=colors,
+            opacity=0.35,
+            name="Volume"
+        ),
+        row=2, col=1
+    )
+
+    # MACD
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["MACD"],
+            line=dict(color="#00a2ff", width=2),
+            name="MACD"
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["MACD_SIGNAL"],
+            line=dict(color="#ff00ff", width=2),
+            name="Signal"
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Bar(
+            x=df["Time"],
+            y=df["MACD_HIST"],
+            marker_color=colors,
+            opacity=0.4,
+            name="Histogram"
+        ),
+        row=3, col=1
+    )
+
+    # Entry
+    fig.add_trace(
+        go.Scatter(
+            x=[df["Time"].iloc[-1]],
+            y=[price],
+            mode="markers+text",
+            marker=dict(color="cyan", size=14),
+            text=["ENTRY"],
+            textposition="top center",
+            name="Entry"
+        ),
+        row=1, col=1
+    )
+
+    # Layout
+    fig.update_layout(
+        template="plotly_dark",
+        height=950,
+        title=f"{symbol} AI Smart Trading Chart",
+        hovermode="x",
+        dragmode="pan",
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor="#050816",
+        plot_bgcolor="#050816",
+        font=dict(color="white"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        )
+    )
+
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.05)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.05)")
+
+    fig.update_layout(
+        xaxis=dict(
+            fixedrange=False,
+            range=[df["Time"].iloc[0], df["Time"].iloc[-1]]
+        ),
+        xaxis2=dict(matches='x'),
+        xaxis3=dict(matches='x')
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
 
 # Clear progress
-progress_bar.empty()
-status_text.empty()
+if len(coins) > 0:
+    progress_bar.empty()
+    status_text.empty()
 
 # =========================================================
 # FOOTER
 # =========================================================
-st.divider()
-st.caption(f"""
-🔄 Data dari Yahoo Finance | Multi Time Frame: 1H, 15M, 5M  
-💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
-📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x
-""")
+st.caption(
+    f"🚀 Crypto Smart AI ULTRA++ | Currency Mode: {currency_mode} | "
+    f"Total Coins: {len(st.session_state.watchlist)} | "
+    f"Storage: {'Google Sheets + Local' if sheet else 'Local Only'}"
+)
