@@ -152,7 +152,6 @@ def load_sheet():
 # FUNGSI MANAJEMEN WATCHLIST (Google Sheets Only)
 # =========================================================
 def get_watchlist():
-    """Ambil watchlist dari Google Sheets"""
     sheet = load_sheet()
     if sheet:
         try:
@@ -162,11 +161,9 @@ def get_watchlist():
                 return watchlist
         except:
             pass
-    # Default jika Google Sheets kosong/error
     return ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
 
 def add_coin_to_watchlist(coin):
-    """Tambah coin ke Google Sheets"""
     sheet = load_sheet()
     if sheet:
         try:
@@ -177,7 +174,6 @@ def add_coin_to_watchlist(coin):
     return False
 
 def remove_coin_from_watchlist(coin):
-    """Hapus coin dari Google Sheets"""
     sheet = load_sheet()
     if sheet:
         try:
@@ -205,7 +201,7 @@ if "selected_coin" not in st.session_state:
 # TITLE
 # =========================================================
 st.title("🚀 Crypto Futures Scanner")
-st.caption("Multi Timeframe Analysis: 1H Trend | 15M S/R | 5M Entry")
+st.caption("Multi Timeframe Analysis: 1H Trend | 15M Trend | 5M Entry")
 
 # =========================================================
 # SIDEBAR
@@ -213,17 +209,14 @@ st.caption("Multi Timeframe Analysis: 1H Trend | 15M S/R | 5M Entry")
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # --- WATCHLIST MANAGEMENT ---
     st.subheader("📋 Watchlist")
     
-    # Status Google Sheets
     sheet = load_sheet()
     if sheet:
         st.success("✅ Google Sheets Connected")
     else:
         st.error("❌ Google Sheets Error")
     
-    # Add Coin
     col_add1, col_add2 = st.columns([3, 1])
     with col_add1:
         new_coin = st.text_input("Add Coin", placeholder="PEPE", label_visibility="collapsed")
@@ -240,7 +233,6 @@ with st.sidebar:
                 else:
                     st.warning(f"⚠️ {coin} already exists!")
     
-    # Show Watchlist
     st.markdown("**Your Coins:**")
     cols = st.columns(3)
     for idx, coin in enumerate(st.session_state.watchlist):
@@ -255,9 +247,7 @@ with st.sidebar:
     
     st.divider()
     
-    # --- TRADING SETTINGS ---
     st.subheader("📊 Trading Settings")
-    
     refresh = st.slider("🔄 Refresh (detik)", 5, 60, 10)
     currency = st.selectbox("💱 Currency", ["USD", "IDR"])
     leverage = st.slider("⚡ Leverage", 1, 125, 10)
@@ -265,7 +255,6 @@ with st.sidebar:
     
     st.divider()
     
-    # --- TELEGRAM ---
     st.subheader("📱 Telegram Alert")
     BOT_TOKEN = "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU"
     CHAT_ID = "999556266"
@@ -283,7 +272,6 @@ with st.sidebar:
     
     st.divider()
     
-    # --- STATUS ---
     st.subheader("📊 Status")
     st.metric("Total Coins", len(st.session_state.watchlist))
     st.metric("Storage", "✅ Google Sheets")
@@ -429,56 +417,63 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     return k, d
 
 # =========================================================
+# FUNGSI ANALISIS TREND UNTUK SETIAP TIMEFRAME
+# =========================================================
+def analyze_trend(df, timeframe_name):
+    """Analisis trend untuk dataframe tertentu"""
+    if df is None or len(df) < 20:
+        return "⚠️ Insufficient Data"
+    
+    df = df.copy()
+    df["EMA20"] = EMA(df, 20)
+    df["EMA50"] = EMA(df, 50)
+    df["ADX"] = ADX(df)
+    
+    last = df.iloc[-1]
+    price = last["Close"]
+    ema20 = last["EMA20"] if not pd.isna(last["EMA20"]) else price
+    ema50 = last["EMA50"] if not pd.isna(last["EMA50"]) else price
+    adx = last["ADX"] if not pd.isna(last["ADX"]) else 0
+    
+    # Kondisi Bullish
+    if price > ema20 > ema50 and adx > 25:
+        return "🟢 BULLISH (Strong)"
+    elif price > ema20 > ema50:
+        return "🟢 BULLISH"
+    
+    # Kondisi Bearish
+    elif price < ema20 < ema50 and adx > 25:
+        return "🔴 BEARISH (Strong)"
+    elif price < ema20 < ema50:
+        return "🔴 BEARISH"
+    
+    # Sideways
+    else:
+        return "🟡 SIDEWAYS"
+
+# =========================================================
 # ANALISIS MULTI TIMEFRAME
 # =========================================================
 def analyze_mtf(symbol):
-    # --- 1H TREND ---
+    # --- 1H ---
     df_1h = get_data_safe(symbol, "1h", min_candles=30)
     if df_1h is None:
         return None
     
-    # --- 15M S/R ---
+    # --- 15M ---
     df_15m = get_data_safe(symbol, "15m", min_candles=50)
     if df_15m is None:
         df_15m = df_1h.copy()
     
-    # --- 5M ENTRY ---
+    # --- 5M ---
     df_5m = get_data_safe(symbol, "5m", min_candles=20)
     if df_5m is None:
         df_5m = df_15m.copy()
     
-    # --- 1H TREND ---
-    df_1h["EMA20"] = EMA(df_1h, 20)
-    df_1h["EMA50"] = EMA(df_1h, 50)
-    df_1h["ADX"] = ADX(df_1h)
-    
-    last_1h = df_1h.iloc[-1]
-    price_1h = last_1h["Close"]
-    ema20_1h = last_1h["EMA20"] if not pd.isna(last_1h["EMA20"]) else price_1h
-    ema50_1h = last_1h["EMA50"] if not pd.isna(last_1h["EMA50"]) else price_1h
-    adx_1h = last_1h["ADX"] if not pd.isna(last_1h["ADX"]) else 0
-    
-    if price_1h > ema20_1h > ema50_1h and adx_1h > 25:
-        trend = "🟢 BULLISH (Strong)"
-    elif price_1h > ema20_1h > ema50_1h:
-        trend = "🟢 BULLISH"
-    elif price_1h < ema20_1h < ema50_1h and adx_1h > 25:
-        trend = "🔴 BEARISH (Strong)"
-    elif price_1h < ema20_1h < ema50_1h:
-        trend = "🔴 BEARISH"
-    else:
-        trend = "🟡 SIDEWAYS"
-    
-    # --- 15M SUPPORT/RESISTANCE ---
-    period = 20
-    recent_high = df_15m["High"].tail(period).max()
-    recent_low = df_15m["Low"].tail(period).min()
-    pivot = (df_15m["High"].tail(period).max() + df_15m["Low"].tail(period).min() + df_15m["Close"].tail(period).mean()) / 3
-    r1 = 2 * pivot - recent_low
-    s1 = 2 * pivot - recent_high
-    
-    support = s1
-    resistance = r1
+    # --- TREND ANALYSIS UNTUK SETIAP TIMEFRAME ---
+    trend_1h = analyze_trend(df_1h, "1H")
+    trend_15m = analyze_trend(df_15m, "15M")
+    trend_5m = analyze_trend(df_5m, "5M")
     
     # --- 15M BB Analysis ---
     df_15m["RSI"] = RSI(df_15m, 14)
@@ -499,7 +494,18 @@ def analyze_mtf(symbol):
     bb_lower = last_15m["BB_LOWER"] if not pd.isna(last_15m["BB_LOWER"]) else price_15m * 0.95
     bb_middle = last_15m["BB_MIDDLE"] if not pd.isna(last_15m["BB_MIDDLE"]) else price_15m
     
-    # --- BB Scoring ---
+    # --- SUPPORT/RESISTANCE 15M ---
+    period = 20
+    recent_high = df_15m["High"].tail(period).max()
+    recent_low = df_15m["Low"].tail(period).min()
+    pivot = (df_15m["High"].tail(period).max() + df_15m["Low"].tail(period).min() + df_15m["Close"].tail(period).mean()) / 3
+    r1 = 2 * pivot - recent_low
+    s1 = 2 * pivot - recent_high
+    
+    support = s1
+    resistance = r1
+    
+    # --- BB SCORING ---
     bb_score = 0
     bb_reasons = []
     
@@ -536,8 +542,8 @@ def analyze_mtf(symbol):
     vol_spike = vol > vol_ma * 1.5 if vol_ma > 0 else False
     
     entry_signal = None
-    is_bullish = "BULLISH" in trend
-    is_bearish = "BEARISH" in trend
+    is_bullish = "BULLISH" in trend_1h
+    is_bearish = "BEARISH" in trend_1h
     
     if is_bullish:
         if price_5m > support and rsi_5m < 45 and bb_score >= 30:
@@ -584,7 +590,9 @@ def analyze_mtf(symbol):
     
     return {
         "symbol": symbol,
-        "trend": trend,
+        "trend_1h": trend_1h,
+        "trend_15m": trend_15m,
+        "trend_5m": trend_5m,
         "support": support,
         "resistance": resistance,
         "entry_signal": entry_signal,
@@ -593,7 +601,6 @@ def analyze_mtf(symbol):
         "take_profit": take_profit,
         "rsi_5m": rsi_5m,
         "rsi_15m": rsi_15m,
-        "adx_1h": adx_1h,
         "price": price_5m,
         "atr": atr_5m,
         "bb_score": bb_score,
@@ -638,7 +645,6 @@ def create_chart(result, symbol, currency_rate):
         row=1, col=1
     )
     
-    # EMA
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
@@ -658,7 +664,6 @@ def create_chart(result, symbol, currency_rate):
         row=1, col=1
     )
     
-    # S/R
     fig.add_hline(
         y=result["support"] * currency_rate,
         line_dash="dot",
@@ -676,7 +681,6 @@ def create_chart(result, symbol, currency_rate):
         row=1, col=1
     )
     
-    # Entry, SL, TP
     if result["entry_signal"]:
         fig.add_hline(
             y=result["entry_price"] * currency_rate,
@@ -703,7 +707,7 @@ def create_chart(result, symbol, currency_rate):
             row=1, col=1
         )
     
-    # === ROW 2: RSI + BB (15M) ===
+    # === ROW 2: RSI + BB ===
     fig.add_trace(
         go.Scatter(
             x=df_15m["Time"],
@@ -736,7 +740,7 @@ def create_chart(result, symbol, currency_rate):
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
     
-    # === ROW 3: MACD (15M) ===
+    # === ROW 3: MACD ===
     macd, signal, hist = MACD(df_15m)
     fig.add_trace(
         go.Scatter(
@@ -768,7 +772,7 @@ def create_chart(result, symbol, currency_rate):
         row=3, col=1
     )
     
-    # === ROW 4: Stochastic (15M) ===
+    # === ROW 4: STOCHASTIC ===
     fig.add_trace(
         go.Scatter(
             x=df_15m["Time"],
@@ -807,161 +811,4 @@ def create_chart(result, symbol, currency_rate):
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=df["Volume"].rolling(5).mean(),
-            line=dict(color="rgba(255,255,255,0.3)", width=1),
-            name="Volume MA"
-        ),
-        row=5, col=1
-    )
-    
-    # === LAYOUT ===
-    fig.update_layout(
-        template="plotly_dark",
-        height=1100,
-        title=dict(
-            text=f"<b>{symbol} - Multi Timeframe Analysis</b>",
-            font=dict(color="#f1f5f9", size=22),
-            x=0.5,
-            xanchor="center"
-        ),
-        hovermode="x unified",
-        dragmode="pan",
-        xaxis_rangeslider_visible=False,
-        paper_bgcolor="#0a0a1a",
-        plot_bgcolor="#0a0a1a",
-        font=dict(color="#94a3b8"),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-            font=dict(size=10)
-        ),
-        margin=dict(l=10, r=10, t=50, b=10)
-    )
-    
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
-    
-    return fig
-
-# =========================================================
-# SIGNAL SUMMARY
-# =========================================================
-st.subheader("📊 Signal Summary")
-
-all_signals = []
-progress_bar = st.progress(0)
-status_text = st.empty()
-
-for idx, symbol in enumerate(st.session_state.watchlist):
-    progress_bar.progress((idx + 1) / len(st.session_state.watchlist))
-    status_text.text(f"🔄 Scanning {symbol}...")
-    
-    result = analyze_mtf(symbol)
-    if result:
-        all_signals.append({
-            "Coin": symbol,
-            "Trend (1H)": result["trend"],
-            "Entry Signal": result["entry_signal"] if result["entry_signal"] else "⏳ WAIT",
-            "BB Score (15M)": result["bb_score"],
-            "RSI 5M": f"{result['rsi_5m']:.1f}",
-            "RSI 15M": f"{result['rsi_15m']:.1f}",
-            "Entry": format_price(result["entry_price"] * currency_rate) if result["entry_price"] else "-",
-            "SL": format_price(result["stop_loss"] * currency_rate) if result["stop_loss"] else "-",
-            "TP": format_price(result["take_profit"] * currency_rate) if result["take_profit"] else "-"
-        })
-
-progress_bar.empty()
-status_text.empty()
-
-if all_signals:
-    df_signals = pd.DataFrame(all_signals)
-    st.dataframe(df_signals, use_container_width=True, hide_index=True)
-else:
-    st.info("ℹ️ Tidak ada data")
-
-# =========================================================
-# COIN DETAIL
-# =========================================================
-st.divider()
-st.subheader("📈 Coin Detail")
-
-selected_coin = st.selectbox(
-    "Select Coin",
-    st.session_state.watchlist,
-    index=st.session_state.watchlist.index(st.session_state.selected_coin) 
-    if st.session_state.selected_coin in st.session_state.watchlist else 0
-)
-st.session_state.selected_coin = selected_coin
-
-result = analyze_mtf(selected_coin)
-
-if result:
-    # Metrics
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("Trend (1H)", result["trend"])
-    col2.metric("Support (15M)", format_price(result["support"] * currency_rate))
-    col3.metric("Resistance (15M)", format_price(result["resistance"] * currency_rate))
-    col4.metric("RSI (5M)", f"{result['rsi_5m']:.1f}")
-    col5.metric("BB Score (15M)", f"{result['bb_score']}/100")
-    
-    # BB Reasons
-    if result["bb_reasons"]:
-        with st.expander("📋 BB Analysis Details", expanded=True):
-            for reason in result["bb_reasons"]:
-                st.write(f"• {reason}")
-    
-    # Entry Signal
-    if result["entry_signal"]:
-        if "BUY" in result["entry_signal"]:
-            st.markdown(f'<div class="signal-buy">🚀 {result["entry_signal"]}</div>', unsafe_allow_html=True)
-        elif "SELL" in result["entry_signal"]:
-            st.markdown(f'<div class="signal-sell">🔻 {result["entry_signal"]}</div>', unsafe_allow_html=True)
-        
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Entry Price", format_price(result["entry_price"] * currency_rate))
-        col_b.metric("Stop Loss", format_price(result["stop_loss"] * currency_rate),
-                    delta=f"{((result['stop_loss']/result['entry_price'] - 1)*100):.1f}%")
-        col_c.metric("Take Profit", format_price(result["take_profit"] * currency_rate),
-                    delta=f"{((result['take_profit']/result['entry_price'] - 1)*100):.1f}%")
-        col_d.metric("Risk/Reward", f"{((result['take_profit']/result['entry_price'] - 1) / (result['stop_loss']/result['entry_price'] - 1)):.2f}")
-        
-        # Telegram Alert
-        if selected_coin not in st.session_state.last_alert or st.session_state.last_alert[selected_coin] != result["entry_signal"]:
-            message = f"""⚡ FUTURES SIGNAL
-
-Coin : {selected_coin}
-Signal : {result['entry_signal']}
-Trend : {result['trend']}
-BB Score : {result['bb_score']}
-
-Entry : ${result['entry_price']:.4f}
-SL : ${result['stop_loss']:.4f}
-TP : ${result['take_profit']:.4f}
-ATR : ${result['atr']:.4f}
-
-Leverage : {leverage}x
-Position : ${position_size * leverage:,.0f}
-
-Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-            send_telegram(message)
-            st.session_state.last_alert[selected_coin] = result["entry_signal"]
-    else:
-        st.markdown(f'<div class="signal-wait">⏳ WAIT</div>', unsafe_allow_html=True)
-    
-    # Chart
-    fig = create_chart(result, selected_coin, currency_rate)
-    st.plotly_chart(fig, use_container_width=True)
-
-# =========================================================
-# FOOTER
-# =========================================================
-st.divider()
-st.caption(f"""
-🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
-💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
-📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
-💾 Storage: Google Sheets | ✅ Connected
-""")
+            y=df["Volume"].rolling(5).
