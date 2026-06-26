@@ -811,4 +811,160 @@ def create_chart(result, symbol, currency_rate):
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=df["Volume"].rolling(5).
+            y=df["Volume"].rolling(5).mean(),
+            line=dict(color="rgba(255,255,255,0.3)", width=1),
+            name="Volume MA"
+        ),
+        row=5, col=1
+    )
+    
+    fig.update_layout(
+        template="plotly_dark",
+        height=1100,
+        title=dict(
+            text=f"<b>{symbol} - Multi Timeframe Analysis</b>",
+            font=dict(color="#f1f5f9", size=22),
+            x=0.5,
+            xanchor="center"
+        ),
+        hovermode="x unified",
+        dragmode="pan",
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor="#0a0a1a",
+        plot_bgcolor="#0a0a1a",
+        font=dict(color="#94a3b8"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=10)
+        ),
+        margin=dict(l=10, r=10, t=50, b=10)
+    )
+    
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
+    
+    return fig
+
+# =========================================================
+# SIGNAL SUMMARY
+# =========================================================
+st.subheader("📊 Signal Summary")
+
+all_signals = []
+progress_bar = st.progress(0)
+status_text = st.empty()
+
+for idx, symbol in enumerate(st.session_state.watchlist):
+    progress_bar.progress((idx + 1) / len(st.session_state.watchlist))
+    status_text.text(f"🔄 Scanning {symbol}...")
+    
+    result = analyze_mtf(symbol)
+    if result:
+        all_signals.append({
+            "Coin": symbol,
+            "Trend 1H": result["trend_1h"],
+            "Trend 15M": result["trend_15m"],
+            "Trend 5M": result["trend_5m"],
+            "Entry Signal": result["entry_signal"] if result["entry_signal"] else "⏳ WAIT",
+            "BB Score (15M)": result["bb_score"],
+            "RSI 5M": f"{result['rsi_5m']:.1f}",
+            "RSI 15M": f"{result['rsi_15m']:.1f}",
+            "Entry": format_price(result["entry_price"] * currency_rate) if result["entry_price"] else "-",
+            "SL": format_price(result["stop_loss"] * currency_rate) if result["stop_loss"] else "-",
+            "TP": format_price(result["take_profit"] * currency_rate) if result["take_profit"] else "-"
+        })
+
+progress_bar.empty()
+status_text.empty()
+
+if all_signals:
+    df_signals = pd.DataFrame(all_signals)
+    st.dataframe(df_signals, use_container_width=True, hide_index=True)
+else:
+    st.info("ℹ️ Tidak ada data")
+
+# =========================================================
+# COIN DETAIL
+# =========================================================
+st.divider()
+st.subheader("📈 Coin Detail")
+
+selected_coin = st.selectbox(
+    "Select Coin",
+    st.session_state.watchlist,
+    index=st.session_state.watchlist.index(st.session_state.selected_coin) 
+    if st.session_state.selected_coin in st.session_state.watchlist else 0
+)
+st.session_state.selected_coin = selected_coin
+
+result = analyze_mtf(selected_coin)
+
+if result:
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Trend 1H", result["trend_1h"])
+    col2.metric("Trend 15M", result["trend_15m"])
+    col3.metric("Trend 5M", result["trend_5m"])
+    col4.metric("Support (15M)", format_price(result["support"] * currency_rate))
+    col5.metric("Resistance (15M)", format_price(result["resistance"] * currency_rate))
+    col6.metric("BB Score (15M)", f"{result['bb_score']}/100")
+    
+    if result["bb_reasons"]:
+        with st.expander("📋 BB Analysis Details", expanded=True):
+            for reason in result["bb_reasons"]:
+                st.write(f"• {reason}")
+    
+    if result["entry_signal"]:
+        if "BUY" in result["entry_signal"]:
+            st.markdown(f'<div class="signal-buy">🚀 {result["entry_signal"]}</div>', unsafe_allow_html=True)
+        elif "SELL" in result["entry_signal"]:
+            st.markdown(f'<div class="signal-sell">🔻 {result["entry_signal"]}</div>', unsafe_allow_html=True)
+        
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("Entry Price", format_price(result["entry_price"] * currency_rate))
+        col_b.metric("Stop Loss", format_price(result["stop_loss"] * currency_rate),
+                    delta=f"{((result['stop_loss']/result['entry_price'] - 1)*100):.1f}%")
+        col_c.metric("Take Profit", format_price(result["take_profit"] * currency_rate),
+                    delta=f"{((result['take_profit']/result['entry_price'] - 1)*100):.1f}%")
+        col_d.metric("Risk/Reward", f"{((result['take_profit']/result['entry_price'] - 1) / (result['stop_loss']/result['entry_price'] - 1)):.2f}")
+        
+        if selected_coin not in st.session_state.last_alert or st.session_state.last_alert[selected_coin] != result["entry_signal"]:
+            message = f"""⚡ FUTURES SIGNAL
+
+Coin : {selected_coin}
+Signal : {result['entry_signal']}
+Trend 1H : {result['trend_1h']}
+Trend 15M : {result['trend_15m']}
+Trend 5M : {result['trend_5m']}
+BB Score : {result['bb_score']}
+
+Entry : ${result['entry_price']:.4f}
+SL : ${result['stop_loss']:.4f}
+TP : ${result['take_profit']:.4f}
+ATR : ${result['atr']:.4f}
+
+Leverage : {leverage}x
+Position : ${position_size * leverage:,.0f}
+
+Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
+            send_telegram(message)
+            st.session_state.last_alert[selected_coin] = result["entry_signal"]
+    else:
+        st.markdown(f'<div class="signal-wait">⏳ WAIT</div>', unsafe_allow_html=True)
+    
+    fig = create_chart(result, selected_coin, currency_rate)
+    st.plotly_chart(fig, use_container_width=True)
+
+# =========================================================
+# FOOTER
+# =========================================================
+st.divider()
+st.caption(f"""
+🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
+💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
+📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
+💾 Storage: Google Sheets | ✅ Connected
+""")
