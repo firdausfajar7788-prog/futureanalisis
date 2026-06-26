@@ -4,10 +4,10 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
-import json
-import os
 
 # =========================================================
 # PAGE CONFIG
@@ -129,41 +129,71 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# LOCAL STORAGE WATCHLIST
+# GOOGLE SHEETS CONNECTION
 # =========================================================
-WATCHLIST_FILE = "watchlist.json"
-
-def save_watchlist_local(watchlist):
+@st.cache_resource
+def load_sheet():
     try:
-        with open(WATCHLIST_FILE, 'w') as f:
-            json.dump({
-                'watchlist': watchlist,
-                'updated': datetime.now().isoformat()
-            }, f, indent=2)
-        return True
-    except:
-        return False
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            dict(st.secrets["gcp_service_account"]),
+            scope
+        )
+        client = gspread.authorize(creds)
+        return client.open("CryptoWatchlist").sheet1
+    except Exception as e:
+        st.error(f"❌ Gagal konek ke Google Sheets: {e}")
+        return None
 
-def load_watchlist_local():
-    try:
-        if os.path.exists(WATCHLIST_FILE):
-            with open(WATCHLIST_FILE, 'r') as f:
-                data = json.load(f)
-                return data.get('watchlist', [])
-    except:
-        pass
-    return None
+# =========================================================
+# FUNGSI MANAJEMEN WATCHLIST (Google Sheets Only)
+# =========================================================
+def get_watchlist():
+    """Ambil watchlist dari Google Sheets"""
+    sheet = load_sheet()
+    if sheet:
+        try:
+            symbols = sheet.col_values(1)
+            watchlist = [x.strip().upper() for x in symbols if x.strip()]
+            if watchlist:
+                return watchlist
+        except:
+            pass
+    # Default jika Google Sheets kosong/error
+    return ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
+
+def add_coin_to_watchlist(coin):
+    """Tambah coin ke Google Sheets"""
+    sheet = load_sheet()
+    if sheet:
+        try:
+            sheet.append_row([coin.upper().strip()])
+            return True
+        except:
+            return False
+    return False
+
+def remove_coin_from_watchlist(coin):
+    """Hapus coin dari Google Sheets"""
+    sheet = load_sheet()
+    if sheet:
+        try:
+            cell = sheet.find(coin.upper().strip())
+            if cell:
+                sheet.delete_rows(cell.row)
+                return True
+        except:
+            return False
+    return False
 
 # =========================================================
 # INISIALISASI SESSION STATE
 # =========================================================
 if "watchlist" not in st.session_state:
-    local = load_watchlist_local()
-    if local:
-        st.session_state.watchlist = local
-    else:
-        st.session_state.watchlist = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
-        save_watchlist_local(st.session_state.watchlist)
+    st.session_state.watchlist = get_watchlist()
 
 if "last_alert" not in st.session_state:
     st.session_state.last_alert = {}
@@ -175,7 +205,7 @@ if "selected_coin" not in st.session_state:
 # TITLE
 # =========================================================
 st.title("🚀 Crypto Futures Scanner")
-st.caption("Multi Timeframe Analysis: 1H Trend | 15M S/R + BB | 5M Entry")
+st.caption("Multi Timeframe Analysis: 1H Trend | 15M S/R | 5M Entry")
 
 # =========================================================
 # SIDEBAR
@@ -186,6 +216,13 @@ with st.sidebar:
     # --- WATCHLIST MANAGEMENT ---
     st.subheader("📋 Watchlist")
     
+    # Status Google Sheets
+    sheet = load_sheet()
+    if sheet:
+        st.success("✅ Google Sheets Connected")
+    else:
+        st.error("❌ Google Sheets Error")
+    
     # Add Coin
     col_add1, col_add2 = st.columns([3, 1])
     with col_add1:
@@ -195,9 +232,13 @@ with st.sidebar:
             if new_coin:
                 coin = new_coin.upper().strip()
                 if coin not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(coin)
-                    save_watchlist_local(st.session_state.watchlist)
-                    st.rerun()
+                    if add_coin_to_watchlist(coin):
+                        st.session_state.watchlist.append(coin)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal tambah coin!")
+                else:
+                    st.warning(f"⚠️ {coin} already exists!")
     
     # Show Watchlist
     st.markdown("**Your Coins:**")
@@ -206,10 +247,11 @@ with st.sidebar:
         col_idx = idx % 3
         with cols[col_idx]:
             if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
-                if coin in st.session_state.watchlist:
+                if remove_coin_from_watchlist(coin):
                     st.session_state.watchlist.remove(coin)
-                    save_watchlist_local(st.session_state.watchlist)
                     st.rerun()
+                else:
+                    st.error(f"❌ Gagal hapus {coin}!")
     
     st.divider()
     
@@ -244,7 +286,7 @@ with st.sidebar:
     # --- STATUS ---
     st.subheader("📊 Status")
     st.metric("Total Coins", len(st.session_state.watchlist))
-    st.metric("Storage", "✅ Local" if load_watchlist_local() else "⚠️ No Save")
+    st.metric("Storage", "✅ Google Sheets")
     st.caption(f"🔄 Auto Refresh: {refresh} detik")
 
 # =========================================================
@@ -387,7 +429,7 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     return k, d
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME + BOLLINGER BANDS
+# ANALISIS MULTI TIMEFRAME
 # =========================================================
 def analyze_mtf(symbol):
     # --- 1H TREND ---
@@ -395,7 +437,7 @@ def analyze_mtf(symbol):
     if df_1h is None:
         return None
     
-    # --- 15M S/R + BB ---
+    # --- 15M S/R ---
     df_15m = get_data_safe(symbol, "15m", min_candles=50)
     if df_15m is None:
         df_15m = df_1h.copy()
@@ -427,7 +469,7 @@ def analyze_mtf(symbol):
     else:
         trend = "🟡 SIDEWAYS"
     
-    # --- 15M SUPPORT/RESISTANCE + BB ---
+    # --- 15M SUPPORT/RESISTANCE ---
     period = 20
     recent_high = df_15m["High"].tail(period).max()
     recent_low = df_15m["Low"].tail(period).min()
@@ -438,7 +480,7 @@ def analyze_mtf(symbol):
     support = s1
     resistance = r1
     
-    # 15M Indicators for BB Analysis
+    # --- 15M BB Analysis ---
     df_15m["RSI"] = RSI(df_15m, 14)
     df_15m["MACD"], df_15m["MACD_SIGNAL"], df_15m["MACD_HIST"] = MACD(df_15m)
     df_15m["STOCH_K"], df_15m["STOCH_D"] = StochasticRSI(df_15m)
@@ -457,12 +499,10 @@ def analyze_mtf(symbol):
     bb_lower = last_15m["BB_LOWER"] if not pd.isna(last_15m["BB_LOWER"]) else price_15m * 0.95
     bb_middle = last_15m["BB_MIDDLE"] if not pd.isna(last_15m["BB_MIDDLE"]) else price_15m
     
-    # --- BOLLINGER BAND + INDIKATOR ANALYSIS (15M) ---
+    # --- BB Scoring ---
     bb_score = 0
     bb_reasons = []
-    bb_signal = "📊 WAIT"
     
-    # 1. RSI + BB
     if rsi_15m < 30 and price_15m < bb_lower:
         bb_score += 25
         bb_reasons.append("RSI Oversold + BB Bottom")
@@ -470,7 +510,6 @@ def analyze_mtf(symbol):
         bb_score -= 25
         bb_reasons.append("RSI Overbought + BB Top")
     
-    # 2. MACD + BB
     if macd_hist > 0 and macd_line > macd_signal and price_15m > bb_middle:
         bb_score += 30
         bb_reasons.append("MACD Bullish + BB Middle")
@@ -478,7 +517,6 @@ def analyze_mtf(symbol):
         bb_score -= 30
         bb_reasons.append("MACD Bearish + BB Middle")
     
-    # 3. Stochastic + BB
     if stoch_k < 20 and stoch_d < 20 and price_15m < bb_lower:
         bb_score += 20
         bb_reasons.append("Stoch Oversold + BB Bottom")
@@ -486,26 +524,9 @@ def analyze_mtf(symbol):
         bb_score -= 20
         bb_reasons.append("Stoch Overbought + BB Top")
     
-    # 4. BB Squeeze (Volatility contraction)
-    bb_width = (bb_upper - bb_lower) / bb_middle
-    prev_bb_width = ((df_15m["BB_UPPER"].iloc[-2] - df_15m["BB_LOWER"].iloc[-2]) / df_15m["BB_MIDDLE"].iloc[-2]) if len(df_15m) > 1 else bb_width
-    
-    if bb_width < 0.05 and bb_width > prev_bb_width * 0.8:
-        bb_score += 10
-        bb_reasons.append("BB Squeeze - Breakout Imminent")
-    
-    # 5. BB Reversal Pattern (Harga menyentuh BB lalu kembali ke middle)
-    if price_15m < bb_lower and price_15m > df_15m["Close"].iloc[-2]:
-        bb_score += 15
-        bb_reasons.append("BB Bounce - Reversal Up")
-    elif price_15m > bb_upper and price_15m < df_15m["Close"].iloc[-2]:
-        bb_score -= 15
-        bb_reasons.append("BB Bounce - Reversal Down")
-    
     # --- 5M ENTRY SIGNAL ---
     df_5m["RSI"] = RSI(df_5m, 14)
     df_5m["Volume_MA"] = df_5m["Volume"].rolling(5).mean()
-    df_5m["BB_UPPER"], _, df_5m["BB_LOWER"] = BollingerBands(df_5m)
     
     last_5m = df_5m.iloc[-1]
     price_5m = last_5m["Close"]
@@ -518,46 +539,33 @@ def analyze_mtf(symbol):
     is_bullish = "BULLISH" in trend
     is_bearish = "BEARISH" in trend
     
-    # Entry Logic with BB Confirmation
     if is_bullish:
         if price_5m > support and rsi_5m < 45 and bb_score >= 30:
-            entry_signal = "🟢 STRONG BUY (Pullback + BB Confirm)"
+            entry_signal = "🟢 STRONG BUY (Pullback + BB)"
         elif price_5m > support and rsi_5m < 45:
-            entry_signal = "🟢 BUY (Pullback to Support)"
+            entry_signal = "🟢 BUY (Pullback)"
         elif price_5m > resistance and vol_spike and bb_score >= 20:
-            entry_signal = "🟢 STRONG BUY (Breakout + BB Confirm)"
+            entry_signal = "🟢 STRONG BUY (Breakout + BB)"
         elif price_5m > resistance and vol_spike:
             entry_signal = "🟢 BUY (Breakout)"
     elif is_bearish:
         if price_5m < resistance and rsi_5m > 55 and bb_score <= -30:
-            entry_signal = "🔴 STRONG SELL (Pullback + BB Confirm)"
+            entry_signal = "🔴 STRONG SELL (Pullback + BB)"
         elif price_5m < resistance and rsi_5m > 55:
-            entry_signal = "🔴 SELL (Pullback to Resistance)"
+            entry_signal = "🔴 SELL (Pullback)"
         elif price_5m < support and vol_spike and bb_score <= -20:
-            entry_signal = "🔴 STRONG SELL (Breakdown + BB Confirm)"
+            entry_signal = "🔴 STRONG SELL (Breakdown + BB)"
         elif price_5m < support and vol_spike:
             entry_signal = "🔴 SELL (Breakdown)"
     else:
         if price_5m > resistance and vol_spike and bb_score >= 20:
-            entry_signal = "🟢 BUY (Breakout + BB Confirm)"
+            entry_signal = "🟢 BUY (Breakout + BB)"
         elif price_5m > resistance and vol_spike:
             entry_signal = "🟢 BUY (Breakout)"
         elif price_5m < support and vol_spike and bb_score <= -20:
-            entry_signal = "🔴 SELL (Breakdown + BB Confirm)"
+            entry_signal = "🔴 SELL (Breakdown + BB)"
         elif price_5m < support and vol_spike:
             entry_signal = "🔴 SELL (Breakdown)"
-    
-    # Determine final BB Signal
-    if bb_score >= 60:
-        bb_signal = "🟢 STRONG BUY (BB)"
-    elif bb_score >= 30:
-        bb_signal = "🟢 BUY (BB)"
-    elif bb_score <= -60:
-        bb_signal = "🔴 STRONG SELL (BB)"
-    elif bb_score <= -30:
-        bb_signal = "🔴 SELL (BB)"
-    else:
-        bb_signal = "📊 WAIT (BB)"
     
     # Risk Management
     atr_5m = ATR(df_5m, 14).iloc[-1] if len(df_5m) > 14 else (df_5m["High"].iloc[-1] - df_5m["Low"].iloc[-1])
@@ -588,8 +596,6 @@ def analyze_mtf(symbol):
         "adx_1h": adx_1h,
         "price": price_5m,
         "atr": atr_5m,
-        # BB Signals
-        "bb_signal": bb_signal,
         "bb_score": bb_score,
         "bb_reasons": bb_reasons,
         "bb_upper": bb_upper,
@@ -597,14 +603,13 @@ def analyze_mtf(symbol):
         "bb_lower": bb_lower,
         "stoch_k": stoch_k,
         "stoch_d": stoch_d,
-        # Dataframes
         "df_1h": df_1h.tail(50),
         "df_15m": df_15m.tail(50),
         "df_5m": df_5m.tail(30)
     }
 
 # =========================================================
-# CREATE CHART - PROFESSIONAL
+# CREATE CHART
 # =========================================================
 def create_chart(result, symbol, currency_rate):
     fig = make_subplots(
@@ -618,8 +623,7 @@ def create_chart(result, symbol, currency_rate):
     df = result["df_5m"]
     df_15m = result["df_15m"]
     
-    # === ROW 1: CANDLESTICK + INDICATORS (5M) ===
-    # Candlestick
+    # === ROW 1: CANDLESTICK ===
     fig.add_trace(
         go.Candlestick(
             x=df["Time"],
@@ -654,30 +658,7 @@ def create_chart(result, symbol, currency_rate):
         row=1, col=1
     )
     
-    # BB 5M
-    bb_upper, bb_mid, bb_lower = BollingerBands(df)
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=bb_upper * currency_rate,
-            line=dict(color="rgba(255,255,255,0.15)", width=1),
-            name="BB Upper (5M)"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=bb_lower * currency_rate,
-            line=dict(color="rgba(255,255,255,0.15)", width=1),
-            name="BB Lower (5M)",
-            fill='tonexty',
-            fillcolor="rgba(255,255,255,0.02)"
-        ),
-        row=1, col=1
-    )
-    
-    # S/R Lines
+    # S/R
     fig.add_hline(
         y=result["support"] * currency_rate,
         line_dash="dot",
@@ -823,7 +804,6 @@ def create_chart(result, symbol, currency_rate):
         row=5, col=1
     )
     
-    # Volume MA
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
@@ -867,10 +847,8 @@ def create_chart(result, symbol, currency_rate):
     return fig
 
 # =========================================================
-# MAIN LOOP
+# SIGNAL SUMMARY
 # =========================================================
-
-# --- SIGNAL SUMMARY ---
 st.subheader("📊 Signal Summary")
 
 all_signals = []
@@ -886,8 +864,8 @@ for idx, symbol in enumerate(st.session_state.watchlist):
         all_signals.append({
             "Coin": symbol,
             "Trend (1H)": result["trend"],
-            "BB Signal (15M)": result["bb_signal"],
             "Entry Signal": result["entry_signal"] if result["entry_signal"] else "⏳ WAIT",
+            "BB Score (15M)": result["bb_score"],
             "RSI 5M": f"{result['rsi_5m']:.1f}",
             "RSI 15M": f"{result['rsi_15m']:.1f}",
             "Entry": format_price(result["entry_price"] * currency_rate) if result["entry_price"] else "-",
@@ -921,7 +899,7 @@ st.session_state.selected_coin = selected_coin
 result = analyze_mtf(selected_coin)
 
 if result:
-    # Metrics Row
+    # Metrics
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("Trend (1H)", result["trend"])
     col2.metric("Support (15M)", format_price(result["support"] * currency_rate))
@@ -957,7 +935,6 @@ if result:
 Coin : {selected_coin}
 Signal : {result['entry_signal']}
 Trend : {result['trend']}
-BB Signal : {result['bb_signal']}
 BB Score : {result['bb_score']}
 
 Entry : ${result['entry_price']:.4f}
@@ -972,7 +949,7 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
             send_telegram(message)
             st.session_state.last_alert[selected_coin] = result["entry_signal"]
     else:
-        st.markdown(f'<div class="signal-wait">⏳ {result["bb_signal"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="signal-wait">⏳ WAIT</div>', unsafe_allow_html=True)
     
     # Chart
     fig = create_chart(result, selected_coin, currency_rate)
@@ -986,5 +963,5 @@ st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
 💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
 📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
-🎯 BB Analysis: RSI + MACD + Stochastic vs Bollinger Bands (15M)
+💾 Storage: Google Sheets | ✅ Connected
 """)
