@@ -8,12 +8,13 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timedelta
+import time
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🚀 Crypto Futures Scanner",
+    page_title="🚀 Crypto Futures Scanner PRO",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -80,6 +81,22 @@ st.markdown("""
         font-size: 18px;
     }
     
+    .pending-signal {
+        background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
+        border: 1px solid #ffaa00;
+        border-radius: 12px;
+        padding: 12px 20px;
+        color: #ffaa00;
+        font-weight: 600;
+        font-size: 16px;
+        animation: blink 1.5s infinite;
+    }
+    @keyframes blink {
+        0% { opacity: 1; }
+        50% { opacity: 0.5; }
+        100% { opacity: 1; }
+    }
+    
     .coin-badge {
         display: inline-block;
         background: rgba(0,255,136,0.08);
@@ -126,20 +143,13 @@ st.markdown("""
         border-bottom: 2px solid #00ff88;
     }
     
-    .pending-signal {
-        background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
-        border: 1px solid #ffaa00;
-        border-radius: 12px;
-        padding: 12px 20px;
-        color: #ffaa00;
-        font-weight: 600;
-        font-size: 16px;
-        animation: blink 1.5s infinite;
+    .metric-green {
+        color: #00ff88 !important;
+        font-weight: 700;
     }
-    @keyframes blink {
-        0% { opacity: 1; }
-        50% { opacity: 0.5; }
-        100% { opacity: 1; }
+    .metric-red {
+        color: #ff3b5c !important;
+        font-weight: 700;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -213,20 +223,37 @@ if "last_alert" not in st.session_state:
 if "selected_coin" not in st.session_state:
     st.session_state.selected_coin = st.session_state.watchlist[0] if st.session_state.watchlist else "BTC"
 
-# =========================================================
-# PENDING SIGNAL (AGAR SINYAL TIDAK HILANG)
-# =========================================================
 if "pending_signal" not in st.session_state:
     st.session_state.pending_signal = {}
 
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
 
+if "performance_stats" not in st.session_state:
+    st.session_state.performance_stats = {
+        "total_signals": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_profit": 0
+    }
+
+# =========================================================
+# TELEGRAM FUNCTIONS (DENGAN ST.SECRETS)
+# =========================================================
+def send_telegram(message):
+    try:
+        BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU")
+        CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "999556266")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except:
+        pass
+
 # =========================================================
 # TITLE
 # =========================================================
-st.title("🚀 Crypto Futures Scanner")
-st.caption("Multi Timeframe Analysis: 1H Trend | 15M Trend + BB | 5M Entry (Stabil)")
+st.title("🚀 Crypto Futures Scanner PRO")
+st.caption("Multi Timeframe Analysis: 1H Trend | 15M Trend + BB | 5M Entry (Optimized RR 3:7)")
 
 # =========================================================
 # SIDEBAR
@@ -278,6 +305,41 @@ with st.sidebar:
     leverage = st.slider("⚡ Leverage", 1, 125, 10)
     position_size = st.number_input("💰 Position Size (USD)", 10, 100000, 100, step=10)
     
+    # === RISK MANAGEMENT SETTINGS ===
+    st.subheader("🎯 Risk Management (RR 3:7)")
+    
+    rr_sl = st.slider(
+        "Stop Loss (ATR)",
+        min_value=1.0,
+        max_value=5.0,
+        value=3.0,
+        step=0.5,
+        help="Semakin besar ATR, SL semakin longgar (kurang kena SL)"
+    )
+    
+    rr_tp = st.slider(
+        "Take Profit (ATR)",
+        min_value=3.0,
+        max_value=12.0,
+        value=7.0,
+        step=0.5,
+        help="Semakin besar ATR, profit potensial semakin besar"
+    )
+    
+    use_trailing = st.toggle(
+        "🚀 Use Trailing Stop",
+        value=True,
+        help="Trailing stop mengunci profit saat harga bergerak sesuai arah"
+    )
+    
+    min_confirmations = st.slider(
+        "Minimal Konfirmasi",
+        min_value=1,
+        max_value=3,
+        value=2,
+        help="Berapa banyak konfirmasi yang dibutuhkan sebelum entry (Support/Resistance/Volume)"
+    )
+    
     # === STABILITAS SETTINGS ===
     st.subheader("🛡️ Signal Stability")
     hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15, help="Berapa lama sinyal bertahan meskipun kondisi berubah")
@@ -287,18 +349,8 @@ with st.sidebar:
     st.divider()
     
     st.subheader("📱 Telegram Alert")
-    BOT_TOKEN = "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU"
-    CHAT_ID = "999556266"
-    
-    def send_telegram(message):
-        try:
-            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
-        except:
-            pass
-    
     if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram("🚀 Telegram Connected! Scanner Aktif.")
+        send_telegram("🚀 Telegram Connected! Scanner PRO Aktif dengan RR 3:7.")
         st.success("✅ Pesan test terkirim!")
     
     st.divider()
@@ -307,6 +359,7 @@ with st.sidebar:
     st.metric("Total Coins", len(st.session_state.watchlist))
     st.metric("Storage", "✅ Google Sheets")
     st.metric("Pending Signals", len(st.session_state.pending_signal))
+    st.metric("Win Rate", f"{st.session_state.performance_stats['wins'] / max(1, st.session_state.performance_stats['total_signals']) * 100:.1f}%")
     st.caption(f"🔄 Auto Refresh: {refresh} detik")
 
 # =========================================================
@@ -335,6 +388,8 @@ currency_symbol = "Rp" if currency == "IDR" else "$"
 # FORMAT PRICE
 # =========================================================
 def format_price(value):
+    if pd.isna(value) or value is None:
+        return "-"
     if currency == "IDR":
         return f"Rp {value:,.0f}"
     if value >= 1000:
@@ -347,6 +402,11 @@ def format_price(value):
         return f"$ {value:,.6f}"
     else:
         return f"$ {value:,.8f}"
+
+def format_percentage(value):
+    if pd.isna(value) or value is None:
+        return "-"
+    return f"{value:.1f}%"
 
 # =========================================================
 # GET DATA - MULTI TIMEFRAME
@@ -478,9 +538,62 @@ def analyze_trend(df, timeframe_name):
         return "🟡 SIDEWAYS"
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME (DENGAN STABILITAS)
+# RISK MANAGEMENT - RR 3:7 DENGAN TRAILING STOP
 # =========================================================
-def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
+def calculate_risk_management_advanced(df_5m, entry_signal, entry_price, rr_sl=3.0, rr_tp=7.0, use_trailing=True):
+    """
+    Advanced Risk Management dengan:
+    - SL = rr_sl x ATR
+    - TP = rr_tp x ATR
+    - Trailing Stop otomatis
+    - Dynamic adjustment berdasarkan volatilitas
+    """
+    
+    # ATR periode 20 untuk stabilitas
+    atr = ATR(df_5m, period=20)
+    atr_value = atr.iloc[-1] if len(atr) > 0 and not pd.isna(atr.iloc[-1]) else 0.01
+    
+    # Minimal ATR 0.5% dari harga
+    min_atr = entry_price * 0.005
+    atr_value = max(atr_value, min_atr)
+    
+    # === HITUNG SL & TP ===
+    if entry_signal and "BUY" in entry_signal:
+        stop_loss = entry_price - atr_value * rr_sl
+        take_profit = entry_price + atr_value * rr_tp
+        
+        # === TRAILING STOP UNTUK BUY ===
+        if use_trailing and len(df_5m) > 5:
+            highest_high = df_5m["High"].tail(5).max()
+            # Naikkan SL ke 0.5 ATR di bawah highest high
+            new_sl = max(highest_high - atr_value * 0.5, stop_loss)
+            stop_loss = max(new_sl, stop_loss)  # SL tidak pernah turun
+        
+    elif entry_signal and "SELL" in entry_signal:
+        stop_loss = entry_price + atr_value * rr_sl
+        take_profit = entry_price - atr_value * rr_tp
+        
+        # === TRAILING STOP UNTUK SELL ===
+        if use_trailing and len(df_5m) > 5:
+            lowest_low = df_5m["Low"].tail(5).min()
+            new_sl = min(lowest_low + atr_value * 0.5, stop_loss)
+            stop_loss = min(new_sl, stop_loss)  # SL tidak pernah naik
+    
+    else:
+        stop_loss = take_profit = None
+    
+    # === VALIDASI ===
+    if stop_loss and take_profit:
+        # SL tidak boleh terlalu dekat (minimal 1%)
+        if abs(stop_loss - entry_price) / entry_price < 0.01:
+            stop_loss = entry_price * 0.99 if entry_signal and "BUY" in entry_signal else entry_price * 1.01
+    
+    return stop_loss, take_profit, atr_value
+
+# =========================================================
+# ANALISIS MULTI TIMEFRAME (DENGAN STABILITAS & RR 3:7)
+# =========================================================
+def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
     # --- 1H ---
     df_1h = get_data_safe(symbol, "1h", min_candles=30)
     if df_1h is None:
@@ -536,7 +649,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
     resistance_buffer = resistance * (1 + buffer_pct / 100)
     
     # --- KONFIRMASI CANDLE (STABILITAS) ---
-    # Cek apakah minimal X candle terakhir di atas support/buffer
     support_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > support_buffer) >= confirmation_candles
     resistance_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > resistance_buffer) >= confirmation_candles
     
@@ -578,7 +690,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
     vol_ma = df_5m["Volume_MA"].iloc[-1] if not pd.isna(df_5m["Volume_MA"].iloc[-1]) else vol
     vol_spike = vol > vol_ma * 1.5 if vol_ma > 0 else False
     
-    # Cek juga candle sebelumnya
     if len(df_5m) > 1:
         vol_prev = df_5m["Volume"].iloc[-2]
         vol_ma_prev = df_5m["Volume_MA"].iloc[-2] if not pd.isna(df_5m["Volume_MA"].iloc[-2]) else vol_prev
@@ -587,53 +698,62 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
     else:
         vol_spike_confirmed = vol_spike
     
-    # --- ENTRY SIGNAL ---
+    # --- HITUNG KONFIRMASI ---
+    confirmations = sum([
+        support_confirmed,
+        resistance_confirmed,
+        vol_spike_confirmed
+    ])
+    
+    # --- ENTRY SIGNAL DENGAN FILTER KONFIRMASI ---
     entry_signal = None
     is_bullish = "BULLISH" in trend_1h
     is_bearish = "BEARISH" in trend_1h
     
-    if is_bullish:
-        if support_confirmed and rsi_5m < 45 and bb_score >= 30:
-            entry_signal = "🟢 STRONG BUY (Pullback + BB Confirmed)"
-        elif support_confirmed and rsi_5m < 45:
-            entry_signal = "🟢 BUY (Pullback Confirmed)"
-        elif resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
-            entry_signal = "🟢 STRONG BUY (Breakout Confirmed)"
-        elif resistance_confirmed and vol_spike_confirmed:
-            entry_signal = "🟢 BUY (Breakout Confirmed)"
-    elif is_bearish:
-        if support_confirmed and rsi_5m > 55 and bb_score <= -30:
-            entry_signal = "🔴 STRONG SELL (Breakdown Confirmed)"
-        elif support_confirmed and rsi_5m > 55:
-            entry_signal = "🔴 SELL (Breakdown Confirmed)"
-        elif resistance_confirmed and vol_spike_confirmed and bb_score <= -20:
-            entry_signal = "🔴 STRONG SELL (Pullback Confirmed)"
-        elif resistance_confirmed and vol_spike_confirmed:
-            entry_signal = "🔴 SELL (Pullback Confirmed)"
-    else:  # SIDEWAYS
-        if resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
-            entry_signal = "🟢 BUY (Breakout Confirmed)"
-        elif resistance_confirmed and vol_spike_confirmed:
-            entry_signal = "🟢 BUY (Breakout Confirmed)"
-        elif support_confirmed and vol_spike_confirmed and bb_score <= -20:
-            entry_signal = "🔴 SELL (Breakdown Confirmed)"
-        elif support_confirmed and vol_spike_confirmed:
-            entry_signal = "🔴 SELL (Breakdown Confirmed)"
+    # Filter: Minimal konfirmasi
+    if confirmations >= min_confirmations:
+        if is_bullish:
+            if support_confirmed and rsi_5m < 45 and bb_score >= 30:
+                entry_signal = "🟢 STRONG BUY (Pullback + BB Confirmed)"
+            elif support_confirmed and rsi_5m < 45:
+                entry_signal = "🟢 BUY (Pullback Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
+                entry_signal = "🟢 STRONG BUY (Breakout Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+        elif is_bearish:
+            if support_confirmed and rsi_5m > 55 and bb_score <= -30:
+                entry_signal = "🔴 STRONG SELL (Breakdown Confirmed)"
+            elif support_confirmed and rsi_5m > 55:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed and bb_score <= -20:
+                entry_signal = "🔴 STRONG SELL (Pullback Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🔴 SELL (Pullback Confirmed)"
+        else:  # SIDEWAYS
+            if resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+            elif support_confirmed and vol_spike_confirmed and bb_score <= -20:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
+            elif support_confirmed and vol_spike_confirmed:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
     
-    # --- RISK MANAGEMENT ---
-    atr_5m = ATR(df_5m, 14).iloc[-1] if len(df_5m) > 14 else (df_5m["High"].iloc[-1] - df_5m["Low"].iloc[-1])
-    atr_5m = atr_5m if not pd.isna(atr_5m) else 0.01
-    
-    if entry_signal and "BUY" in entry_signal:
+    # === RISK MANAGEMENT DENGAN RR 3:7 ===
+    if entry_signal:
         entry_price = df_5m["Close"].iloc[-1]
-        stop_loss = entry_price - atr_5m * 2
-        take_profit = entry_price + atr_5m * 4
-    elif entry_signal and "SELL" in entry_signal:
-        entry_price = df_5m["Close"].iloc[-1]
-        stop_loss = entry_price + atr_5m * 2
-        take_profit = entry_price - atr_5m * 4
+        stop_loss, take_profit, atr_value = calculate_risk_management_advanced(
+            df_5m,
+            entry_signal,
+            entry_price,
+            rr_sl=rr_sl,
+            rr_tp=rr_tp,
+            use_trailing=use_trailing
+        )
     else:
         entry_price = stop_loss = take_profit = None
+        atr_value = 0.01
     
     return {
         "symbol": symbol,
@@ -644,6 +764,8 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
         "resistance": resistance,
         "support_confirmed": support_confirmed,
         "resistance_confirmed": resistance_confirmed,
+        "vol_spike_confirmed": vol_spike_confirmed,
+        "confirmations": confirmations,
         "entry_signal": entry_signal,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
@@ -651,7 +773,7 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
         "rsi_5m": rsi_5m,
         "rsi_15m": rsi_15m,
         "price": price_5m,
-        "atr": atr_5m,
+        "atr": atr_value,
         "bb_score": bb_score,
         "bb_reasons": bb_reasons,
         "bb_upper": bb_upper,
@@ -659,7 +781,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3):
         "bb_lower": bb_lower,
         "stoch_k": stoch_k,
         "stoch_d": stoch_d,
-        "vol_spike_confirmed": vol_spike_confirmed,
         "df_1h": df_1h.tail(50),
         "df_15m": df_15m.tail(50),
         "df_5m": df_5m.tail(30)
@@ -733,7 +854,7 @@ def create_chart(result, symbol, currency_rate):
     )
     
     # Entry, SL, TP
-    if result["entry_signal"]:
+    if result["entry_signal"] and result["entry_price"]:
         fig.add_hline(
             y=result["entry_price"] * currency_rate,
             line_dash="solid",
@@ -742,22 +863,24 @@ def create_chart(result, symbol, currency_rate):
             annotation_position="top left",
             row=1, col=1
         )
-        fig.add_hline(
-            y=result["stop_loss"] * currency_rate,
-            line_dash="dash",
-            line_color="#ff0000",
-            annotation_text="SL",
-            annotation_position="bottom left",
-            row=1, col=1
-        )
-        fig.add_hline(
-            y=result["take_profit"] * currency_rate,
-            line_dash="dash",
-            line_color="#00ff00",
-            annotation_text="TP",
-            annotation_position="top right",
-            row=1, col=1
-        )
+        if result["stop_loss"]:
+            fig.add_hline(
+                y=result["stop_loss"] * currency_rate,
+                line_dash="dash",
+                line_color="#ff0000",
+                annotation_text=f"SL {format_price(result['stop_loss'] * currency_rate)}",
+                annotation_position="bottom left",
+                row=1, col=1
+            )
+        if result["take_profit"]:
+            fig.add_hline(
+                y=result["take_profit"] * currency_rate,
+                line_dash="dash",
+                line_color="#00ff00",
+                annotation_text=f"TP {format_price(result['take_profit'] * currency_rate)}",
+                annotation_position="top right",
+                row=1, col=1
+            )
     
     # === ROW 2: RSI + BB ===
     fig.add_trace(
@@ -874,7 +997,7 @@ def create_chart(result, symbol, currency_rate):
         template="plotly_dark",
         height=1100,
         title=dict(
-            text=f"<b>{symbol} - Multi Timeframe Analysis</b>",
+            text=f"<b>{symbol} - Multi Timeframe Analysis (RR 3:7)</b>",
             font=dict(color="#f1f5f9", size=22),
             x=0.5,
             xanchor="center"
@@ -927,7 +1050,7 @@ for idx, symbol in enumerate(st.session_state.watchlist):
     progress_bar.progress((idx + 1) / len(st.session_state.watchlist))
     status_text.text(f"🔄 Scanning {symbol}...")
     
-    result = analyze_mtf(symbol, buffer_pct, confirmation_candles)
+    result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
     
     if result:
         # Cek apakah ada pending signal untuk coin ini
@@ -954,9 +1077,12 @@ for idx, symbol in enumerate(st.session_state.watchlist):
                 "sl": result["stop_loss"],
                 "tp": result["take_profit"]
             }
+            
             # Kirim Telegram
             if result["entry_signal"]:
-                message = f"""⚡ NEW SIGNAL!
+                rr_ratio = ((result["take_profit"] / result["entry_price"] - 1) / 
+                           (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+                message = f"""⚡ NEW SIGNAL! (RR 3:7)
 
 Coin : {symbol}
 Signal : {result['entry_signal']}
@@ -964,13 +1090,18 @@ Trend 1H : {result['trend_1h']}
 Trend 15M : {result['trend_15m']}
 Trend 5M : {result['trend_5m']}
 BB Score : {result['bb_score']}
+Confirmations : {result['confirmations']}/3
 
 Entry : ${result['entry_price']:.4f}
-SL : ${result['stop_loss']:.4f}
-TP : ${result['take_profit']:.4f}
+SL : ${result['stop_loss']:.4f} ({format_percentage((result['stop_loss']/result['entry_price'] - 1)*100)})
+TP : ${result['take_profit']:.4f} ({format_percentage((result['take_profit']/result['entry_price'] - 1)*100)})
+RR Ratio : {rr_ratio:.2f}
 
 Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                 send_telegram(message)
+                
+                # Update stats
+                st.session_state.performance_stats["total_signals"] += 1
         
         all_signals.append({
             "Coin": symbol,
@@ -983,7 +1114,8 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
             "RSI 15M": f"{result['rsi_15m']:.1f}",
             "Entry": entry_price_display,
             "SL": sl_display,
-            "TP": tp_display
+            "TP": tp_display,
+            "Confirm": f"{result['confirmations']}/3"
         })
 
 progress_bar.empty()
@@ -1001,7 +1133,7 @@ else:
 if st.session_state.pending_signal:
     st.divider()
     st.subheader("⏳ Pending Signals (Aktif)")
-    st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit")
+    st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit | RR 3:7")
     
     cols = st.columns(min(len(st.session_state.pending_signal), 4))
     for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
@@ -1009,11 +1141,15 @@ if st.session_state.pending_signal:
         with cols[col_idx]:
             elapsed = (datetime.now() - data["time"]).seconds / 60
             remaining = max(0, hold_minutes - elapsed)
+            rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
             st.markdown(f"""
             <div class="pending-signal">
                 <b>{symbol}</b><br>
                 {data['signal']}<br>
                 Entry: {format_price(data['entry'] * currency_rate)}<br>
+                SL: {format_price(data['sl'] * currency_rate)}<br>
+                TP: {format_price(data['tp'] * currency_rate)}<br>
+                RR: {rr:.2f}<br>
                 ⏱️ {remaining:.0f}m remaining
             </div>
             """, unsafe_allow_html=True)
@@ -1032,7 +1168,7 @@ selected_coin = st.selectbox(
 )
 st.session_state.selected_coin = selected_coin
 
-result = analyze_mtf(selected_coin, buffer_pct, confirmation_candles)
+result = analyze_mtf(selected_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
 
 if result:
     col1, col2, col3, col4, col5, col6 = st.columns(6)
@@ -1044,10 +1180,11 @@ if result:
     col6.metric("BB Score", f"{result['bb_score']}/100")
     
     # Status Konfirmasi
-    col_conf1, col_conf2, col_conf3 = st.columns(3)
+    col_conf1, col_conf2, col_conf3, col_conf4 = st.columns(4)
     col_conf1.metric("Support Confirmed", "✅" if result["support_confirmed"] else "❌")
     col_conf2.metric("Resistance Confirmed", "✅" if result["resistance_confirmed"] else "❌")
     col_conf3.metric("Volume Spike", "✅" if result["vol_spike_confirmed"] else "❌")
+    col_conf4.metric("Total Confirm", f"{result['confirmations']}/3")
     
     if result["bb_reasons"]:
         with st.expander("📋 BB Analysis Details", expanded=True):
@@ -1058,30 +1195,36 @@ if result:
     pending = st.session_state.pending_signal.get(selected_coin)
     
     if pending:
+        rr = ((pending["tp"] / pending["entry"] - 1) / (pending["sl"] / pending["entry"] - 1)) if pending["sl"] else 0
         st.markdown(f"""
         <div class="pending-signal">
             ⏳ PENDING SIGNAL: {pending['signal']}<br>
             Entry: {format_price(pending['entry'] * currency_rate)} | 
             SL: {format_price(pending['sl'] * currency_rate)} | 
             TP: {format_price(pending['tp'] * currency_rate)}<br>
+            RR Ratio: {rr:.2f} | 
             ⏱️ {max(0, hold_minutes - (datetime.now() - pending['time']).seconds/60):.0f}m remaining
         </div>
         """, unsafe_allow_html=True)
     elif result["entry_signal"]:
+        rr = ((result["take_profit"] / result["entry_price"] - 1) / 
+              (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+        
         if "BUY" in result["entry_signal"]:
             st.markdown(f'<div class="signal-buy">🚀 {result["entry_signal"]}</div>', unsafe_allow_html=True)
         elif "SELL" in result["entry_signal"]:
             st.markdown(f'<div class="signal-sell">🔻 {result["entry_signal"]}</div>', unsafe_allow_html=True)
         
-        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a, col_b, col_c, col_d, col_e = st.columns(5)
         col_a.metric("Entry Price", format_price(result["entry_price"] * currency_rate))
         col_b.metric("Stop Loss", format_price(result["stop_loss"] * currency_rate),
-                    delta=f"{((result['stop_loss']/result['entry_price'] - 1)*100):.1f}%")
+                    delta=f"{format_percentage((result['stop_loss']/result['entry_price'] - 1)*100)}")
         col_c.metric("Take Profit", format_price(result["take_profit"] * currency_rate),
-                    delta=f"{((result['take_profit']/result['entry_price'] - 1)*100):.1f}%")
-        col_d.metric("Risk/Reward", f"{((result['take_profit']/result['entry_price'] - 1) / (result['stop_loss']/result['entry_price'] - 1)):.2f}")
+                    delta=f"{format_percentage((result['take_profit']/result['entry_price'] - 1)*100)}")
+        col_d.metric("Risk/Reward", f"{rr:.2f}")
+        col_e.metric("ATR", format_price(result["atr"] * currency_rate))
     else:
-        st.markdown(f'<div class="signal-wait">⏳ WAIT</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="signal-wait">⏳ WAIT - No Signal</div>', unsafe_allow_html=True)
     
     fig = create_chart(result, selected_coin, currency_rate)
     st.plotly_chart(fig, use_container_width=True)
@@ -1096,6 +1239,21 @@ if len(st.session_state.signal_history) > 0:
     st.dataframe(hist_df, use_container_width=True, hide_index=True)
 
 # =========================================================
+# PERFORMANCE STATISTICS
+# =========================================================
+st.divider()
+st.subheader("📊 Performance Statistics")
+
+stats = st.session_state.performance_stats
+col1, col2, col3, col4, col5 = st.columns(5)
+
+col1.metric("Total Signals", stats["total_signals"])
+col2.metric("Wins", stats["wins"])
+col3.metric("Losses", stats["losses"])
+col4.metric("Win Rate", f"{(stats['wins'] / max(1, stats['total_signals']) * 100):.1f}%")
+col5.metric("Total Profit", f"${stats['total_profit']:.2f}")
+
+# =========================================================
 # FOOTER
 # =========================================================
 st.divider()
@@ -1103,5 +1261,7 @@ st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
 💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
 📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
-🛡️ Signal Hold: {hold_minutes}m | Buffer: {buffer_pct}% | Confirmation: {confirmation_candles} candles
+🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
+🛡️ Buffer: {buffer_pct}% | Confirmation: {confirmation_candles} candles  
+🚀 Trailing Stop: {'Active' if use_trailing else 'Inactive'}
 """)
