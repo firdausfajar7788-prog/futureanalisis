@@ -14,7 +14,7 @@ import time
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🚀 Crypto Futures Scanner PRO",
+    page_title=".",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -252,7 +252,7 @@ def send_telegram(message):
 # =========================================================
 # TITLE
 # =========================================================
-st.title("🚀 Crypto Futures Scanner PRO")
+st.title(".")
 st.caption("Multi Timeframe Analysis: 1H Trend | 15M Trend + BB | 5M Entry (Optimized RR 3:7)")
 
 # =========================================================
