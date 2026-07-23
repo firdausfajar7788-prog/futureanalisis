@@ -187,7 +187,7 @@ def get_watchlist():
                 return watchlist
         except:
             pass
-    return ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK"]
+    return ["BTC"]
 
 def add_coin_to_watchlist(coin):
     sheet = load_sheet()
