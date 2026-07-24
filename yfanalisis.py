@@ -8,14 +8,13 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timedelta
-import json
-import os
+import time
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🚀 Crypto Dashboard All-in-One",
+    page_title=".",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -25,7 +24,10 @@ st.set_page_config(
 # =========================================================
 st.markdown("""
 <style>
-    .stApp { background: #0a0a1a; }
+    .stApp {
+        background: #0a0a1a;
+    }
+    
     [data-testid="stMetric"] {
         background: linear-gradient(145deg, #111827, #0b1220);
         border: 1px solid #1e293b;
@@ -38,27 +40,47 @@ st.markdown("""
         transform: translateY(-2px);
         box-shadow: 0 8px 30px rgba(0,255,255,0.1);
     }
-    [data-testid="stMetricLabel"] { color: #94a3b8; font-size: 13px; }
-    [data-testid="stMetricValue"] { color: #f1f5f9; font-size: 24px; font-weight: 700; }
-    .profit { color: #00ff88; font-weight: 700; }
-    .loss { color: #ff3b5c; font-weight: 700; }
-    .neutral { color: #ffaa00; font-weight: 700; }
-    .signal-buy { background: #00ff88; color: #000; font-weight: 700; padding: 2px 12px; border-radius: 6px; }
-    .signal-sell { background: #ff3b5c; color: #fff; font-weight: 700; padding: 2px 12px; border-radius: 6px; }
-    .signal-hold { background: #ffaa00; color: #000; font-weight: 700; padding: 2px 12px; border-radius: 6px; }
-    .stButton > button {
-        background: linear-gradient(145deg, #00ff88, #00cc66);
-        color: #000;
+    [data-testid="stMetricLabel"] {
+        color: #94a3b8;
+        font-size: 13px;
+        font-weight: 500;
+    }
+    [data-testid="stMetricValue"] {
+        color: #f1f5f9;
+        font-size: 24px;
         font-weight: 700;
-        border: none;
-        border-radius: 10px;
-        padding: 10px 24px;
-        transition: all 0.3s ease;
     }
-    .stButton > button:hover {
-        transform: scale(1.03);
-        box-shadow: 0 0 30px rgba(0,255,136,0.3);
+    
+    .signal-buy {
+        background: linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05));
+        border: 1px solid #00ff88;
+        border-radius: 12px;
+        padding: 12px 20px;
+        color: #00ff88;
+        font-weight: 600;
+        font-size: 18px;
+        box-shadow: 0 0 30px rgba(0,255,136,0.1);
     }
+    .signal-sell {
+        background: linear-gradient(135deg, rgba(255,59,92,0.15), rgba(255,59,92,0.05));
+        border: 1px solid #ff3b5c;
+        border-radius: 12px;
+        padding: 12px 20px;
+        color: #ff3b5c;
+        font-weight: 600;
+        font-size: 18px;
+        box-shadow: 0 0 30px rgba(255,59,92,0.1);
+    }
+    .signal-wait {
+        background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
+        border: 1px solid #ffaa00;
+        border-radius: 12px;
+        padding: 12px 20px;
+        color: #ffaa00;
+        font-weight: 600;
+        font-size: 18px;
+    }
+    
     .pending-signal {
         background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
         border: 1px solid #ffaa00;
@@ -74,19 +96,40 @@ st.markdown("""
         50% { opacity: 0.5; }
         100% { opacity: 1; }
     }
-    .position-card {
-        background: linear-gradient(145deg, #111827, #0b1220);
-        border: 1px solid #1e293b;
-        border-radius: 16px;
-        padding: 16px;
-        margin: 8px 0;
+    
+    .coin-badge {
+        display: inline-block;
+        background: rgba(0,255,136,0.08);
+        border: 1px solid rgba(0,255,136,0.2);
+        border-radius: 20px;
+        padding: 4px 16px;
+        margin: 3px 4px;
+        font-size: 14px;
+        color: #00ff88;
+        transition: all 0.2s ease;
+    }
+    .coin-badge:hover {
+        background: rgba(0,255,136,0.15);
+        border-color: #00ff88;
+    }
+    
+    .stButton > button {
+        background: linear-gradient(145deg, #00ff88, #00cc66);
+        color: #000;
+        font-weight: 700;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 24px;
         transition: all 0.3s ease;
     }
-    .position-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0,255,255,0.1);
+    .stButton > button:hover {
+        transform: scale(1.03);
+        box-shadow: 0 0 30px rgba(0,255,136,0.3);
     }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
     .stTabs [data-baseweb="tab"] {
         background: rgba(255,255,255,0.03);
         border-radius: 8px 8px 0 0;
@@ -99,6 +142,15 @@ st.markdown("""
         color: #00ff88;
         border-bottom: 2px solid #00ff88;
     }
+    
+    .metric-green {
+        color: #00ff88 !important;
+        font-weight: 700;
+    }
+    .metric-red {
+        color: #ff3b5c !important;
+        font-weight: 700;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -107,7 +159,6 @@ st.markdown("""
 # =========================================================
 @st.cache_resource
 def load_sheet():
-    """Load Google Sheets connection dengan Service Account"""
     try:
         scope = [
             "https://spreadsheets.google.com/feeds",
@@ -123,55 +174,20 @@ def load_sheet():
         st.error(f"❌ Gagal konek ke Google Sheets: {e}")
         return None
 
-def get_worksheet(name):
-    """Ambil worksheet tertentu, buat jika belum ada"""
-    try:
-        scope = [
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(
-            dict(st.secrets["gcp_service_account"]),
-            scope
-        )
-        client = gspread.authorize(creds)
-        spreadsheet = client.open("CryptoDashboard")
-        try:
-            return spreadsheet.worksheet(name)
-        except:
-            return spreadsheet.add_worksheet(title=name, rows="1000", cols="20")
-    except Exception as e:
-        return None
-
-# =========================================================
-# FUNGSI TELEGRAM
-# =========================================================
-def send_telegram(message):
-    try:
-        BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU")
-        CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "999556266")
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except:
-        pass
-
 # =========================================================
 # FUNGSI MANAJEMEN WATCHLIST
 # =========================================================
 def get_watchlist():
-    """Ambil watchlist dari Google Sheets"""
     sheet = load_sheet()
     if sheet:
         try:
-            all_values = sheet.get_all_values()
-            if all_values:
-                start_row = 1 if all_values[0][0].upper() == "SYMBOL" else 0
-                symbols = [row[0].strip().upper() for row in all_values[start_row:] if row and row[0].strip()]
-                if symbols:
-                    return symbols
+            symbols = sheet.col_values(1)
+            watchlist = [x.strip().upper() for x in symbols if x.strip()]
+            if watchlist:
+                return watchlist
         except:
             pass
-    return ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK", "MATIC", "UNI"]
+    return ["BTC"]
 
 def add_coin_to_watchlist(coin):
     sheet = load_sheet()
@@ -196,143 +212,160 @@ def remove_coin_from_watchlist(coin):
     return False
 
 # =========================================================
-# FUNGSI MANAJEMEN POSISI
-# =========================================================
-def get_positions_sheet():
-    return get_worksheet("Positions")
-
-def load_positions_from_sheets():
-    """Load positions dari Google Sheets"""
-    sheet = get_positions_sheet()
-    if sheet:
-        try:
-            all_values = sheet.get_all_values()
-            if len(all_values) > 1:
-                positions = []
-                for row in all_values[1:]:
-                    if row and row[0].strip():
-                        positions.append({
-                            "symbol": row[0].strip().upper(),
-                            "entry_price": float(row[1]) if row[1] and row[1].strip() else 0,
-                            "quantity": float(row[2]) if row[2] and row[2].strip() else 0,
-                            "entry_date": row[3] if len(row) > 3 else "",
-                            "signal": row[4] if len(row) > 4 else "",
-                            "sl": float(row[5]) if len(row) > 5 and row[5] and row[5].strip() else 0,
-                            "tp": float(row[6]) if len(row) > 6 and row[6] and row[6].strip() else 0,
-                            "created_at": row[7] if len(row) > 7 else ""
-                        })
-                return positions
-        except Exception as e:
-            st.error(f"Error load positions: {e}")
-    return []
-
-def save_positions_to_sheets(positions):
-    """Save positions ke Google Sheets"""
-    sheet = get_positions_sheet()
-    if sheet:
-        try:
-            sheet.clear()
-            headers = ["Symbol", "Entry Price", "Quantity", "Entry Date", "Signal", "SL", "TP", "Created At"]
-            sheet.append_row(headers)
-            for pos in positions:
-                row = [
-                    pos.get("symbol", ""),
-                    pos.get("entry_price", 0),
-                    pos.get("quantity", 0),
-                    pos.get("entry_date", ""),
-                    pos.get("signal", ""),
-                    pos.get("sl", 0),
-                    pos.get("tp", 0),
-                    pos.get("created_at", "")
-                ]
-                sheet.append_row(row)
-            return True
-        except Exception as e:
-            st.error(f"Error save positions: {e}")
-            return False
-    return False
-
-# =========================================================
-# FUNGSI MANAJEMEN PENDING SIGNALS
-# =========================================================
-def get_pending_sheet():
-    return get_worksheet("PendingSignals")
-
-def load_pending_from_sheets():
-    """Load pending signals dari Google Sheets"""
-    sheet = get_pending_sheet()
-    if sheet:
-        try:
-            all_values = sheet.get_all_values()
-            if len(all_values) > 1:
-                pending = {}
-                for row in all_values[1:]:
-                    if row and row[0].strip():
-                        symbol = row[0].strip().upper()
-                        pending[symbol] = {
-                            "signal": row[1] if len(row) > 1 else "",
-                            "time": row[2] if len(row) > 2 else "",
-                            "entry": float(row[3]) if len(row) > 3 and row[3] and row[3].strip() else 0,
-                            "sl": float(row[4]) if len(row) > 4 and row[4] and row[4].strip() else 0,
-                            "tp": float(row[5]) if len(row) > 5 and row[5] and row[5].strip() else 0,
-                            "taken": row[6].lower() == "true" if len(row) > 6 else False
-                        }
-                return pending
-        except:
-            pass
-    return {}
-
-def save_pending_to_sheets(pending):
-    """Save pending signals ke Google Sheets"""
-    sheet = get_pending_sheet()
-    if sheet:
-        try:
-            sheet.clear()
-            headers = ["Symbol", "Signal", "Time", "Entry", "SL", "TP", "Taken"]
-            sheet.append_row(headers)
-            for symbol, data in pending.items():
-                row = [
-                    symbol,
-                    data.get("signal", ""),
-                    data.get("time", ""),
-                    data.get("entry", 0),
-                    data.get("sl", 0),
-                    data.get("tp", 0),
-                    str(data.get("taken", False))
-                ]
-                sheet.append_row(row)
-            return True
-        except:
-            return False
-    return False
-
-# =========================================================
-# SESSION STATE
+# INISIALISASI SESSION STATE
 # =========================================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = get_watchlist()
-if "positions" not in st.session_state:
-    st.session_state.positions = load_positions_from_sheets()
-if "pending_signal" not in st.session_state:
-    st.session_state.pending_signal = load_pending_from_sheets()
+
 if "last_alert" not in st.session_state:
     st.session_state.last_alert = {}
+
+if "selected_coin" not in st.session_state:
+    st.session_state.selected_coin = st.session_state.watchlist[0] if st.session_state.watchlist else "BTC"
+
+if "pending_signal" not in st.session_state:
+    st.session_state.pending_signal = {}
+
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
-if "selected_coin" not in st.session_state:
-    st.session_state.selected_coin = "BTC"
+
 if "performance_stats" not in st.session_state:
-    st.session_state.performance_stats = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0}
-if "last_update" not in st.session_state:
-    st.session_state.last_update = datetime.now()
-if "prev_data" not in st.session_state:
-    st.session_state.prev_data = {}
+    st.session_state.performance_stats = {
+        "total_signals": 0,
+        "wins": 0,
+        "losses": 0,
+        "total_profit": 0
+    }
+
+# =========================================================
+# TELEGRAM FUNCTIONS (DENGAN ST.SECRETS)
+# =========================================================
+def send_telegram(message):
+    try:
+        BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU")
+        CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "999556266")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except:
+        pass
 
 # =========================================================
 # TITLE
 # =========================================================
-st.title("🚀 Crypto Dashboard All-in-One")
-st.caption(f"🕐 Last Update: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
+st.title(".")
+st.caption("Multi Timeframe Analysis: 1H Trend | 15M Trend + BB | 5M Entry (Optimized RR 3:7)")
+
+# =========================================================
+# SIDEBAR
+# =========================================================
+with st.sidebar:
+    st.header("⚙️ Settings")
+    
+    st.subheader("📋 Watchlist")
+    
+    sheet = load_sheet()
+    if sheet:
+        st.success("✅ Google Sheets Connected")
+    else:
+        st.error("❌ Google Sheets Error")
+    
+    col_add1, col_add2 = st.columns([3, 1])
+    with col_add1:
+        new_coin = st.text_input("Add Coin", placeholder="PEPE", label_visibility="collapsed")
+    with col_add2:
+        if st.button("➕", use_container_width=True):
+            if new_coin:
+                coin = new_coin.upper().strip()
+                if coin not in st.session_state.watchlist:
+                    if add_coin_to_watchlist(coin):
+                        st.session_state.watchlist.append(coin)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal tambah coin!")
+                else:
+                    st.warning(f"⚠️ {coin} already exists!")
+    
+    st.markdown("**Your Coins:**")
+    cols = st.columns(3)
+    for idx, coin in enumerate(st.session_state.watchlist):
+        col_idx = idx % 3
+        with cols[col_idx]:
+            if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
+                if remove_coin_from_watchlist(coin):
+                    st.session_state.watchlist.remove(coin)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Gagal hapus {coin}!")
+    
+    st.divider()
+    
+    st.subheader("📊 Trading Settings")
+    refresh = st.slider("🔄 Refresh (detik)", 5, 60, 10)
+    currency = st.selectbox("💱 Currency", ["USD", "IDR"])
+    leverage = st.slider("⚡ Leverage", 1, 125, 10)
+    position_size = st.number_input("💰 Position Size (USD)", 10, 100000, 100, step=10)
+    
+    # === RISK MANAGEMENT SETTINGS ===
+    st.subheader("🎯 Risk Management (RR 3:7)")
+    
+    rr_sl = st.slider(
+        "Stop Loss (ATR)",
+        min_value=1.0,
+        max_value=5.0,
+        value=3.0,
+        step=0.5,
+        help="Semakin besar ATR, SL semakin longgar (kurang kena SL)"
+    )
+    
+    rr_tp = st.slider(
+        "Take Profit (ATR)",
+        min_value=3.0,
+        max_value=12.0,
+        value=7.0,
+        step=0.5,
+        help="Semakin besar ATR, profit potensial semakin besar"
+    )
+    
+    use_trailing = st.toggle(
+        "🚀 Use Trailing Stop",
+        value=True,
+        help="Trailing stop mengunci profit saat harga bergerak sesuai arah"
+    )
+    
+    min_confirmations = st.slider(
+        "Minimal Konfirmasi",
+        min_value=1,
+        max_value=3,
+        value=2,
+        help="Berapa banyak konfirmasi yang dibutuhkan sebelum entry (Support/Resistance/Volume)"
+    )
+    
+    # === STABILITAS SETTINGS ===
+    st.subheader("🛡️ Signal Stability")
+    hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15, help="Berapa lama sinyal bertahan meskipun kondisi berubah")
+    buffer_pct = st.slider("Buffer Level (%)", 0.1, 1.0, 0.5, 0.1, help="Buffer untuk support/resistance")
+    confirmation_candles = st.slider("Konfirmasi Candle", 1, 5, 3, help="Minimal candle untuk konfirmasi")
+    
+    st.divider()
+    
+    st.subheader("📱 Telegram Alert")
+    if st.button("🚀 Test Telegram", use_container_width=True):
+        send_telegram("🚀 Telegram Connected! Scanner PRO Aktif dengan RR 3:7.")
+        st.success("✅ Pesan test terkirim!")
+    
+    st.divider()
+    
+    st.subheader("📊 Status")
+    st.metric("Total Coins", len(st.session_state.watchlist))
+    st.metric("Storage", "✅ Google Sheets")
+    st.metric("Pending Signals", len(st.session_state.pending_signal))
+    st.metric("Win Rate", f"{st.session_state.performance_stats['wins'] / max(1, st.session_state.performance_stats['total_signals']) * 100:.1f}%")
+    st.caption(f"🔄 Auto Refresh: {refresh} detik")
+
+# =========================================================
+# AUTO REFRESH
+# =========================================================
+st_autorefresh(interval=refresh * 1000, key="refresh")
 
 # =========================================================
 # USD TO IDR
@@ -347,12 +380,18 @@ def get_usd_idr():
     except:
         return 16000
 
+usd_to_idr = get_usd_idr()
+currency_rate = usd_to_idr if currency == "IDR" else 1
+currency_symbol = "Rp" if currency == "IDR" else "$"
+
 # =========================================================
 # FORMAT PRICE
 # =========================================================
 def format_price(value):
     if pd.isna(value) or value is None:
         return "-"
+    if currency == "IDR":
+        return f"Rp {value:,.0f}"
     if value >= 1000:
         return f"$ {value:,.2f}"
     elif value >= 100:
@@ -370,7 +409,7 @@ def format_percentage(value):
     return f"{value:.1f}%"
 
 # =========================================================
-# GET DATA - MULTI TIMEFRAME (SAMA SEPERTI KODE SEBELUMNYA)
+# GET DATA - MULTI TIMEFRAME
 # =========================================================
 @st.cache_data(ttl=30)
 def get_data(symbol, interval, period):
@@ -475,15 +514,18 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
 def analyze_trend(df, timeframe_name):
     if df is None or len(df) < 20:
         return "⚠️ Insufficient Data"
+    
     df = df.copy()
     df["EMA20"] = EMA(df, 20)
     df["EMA50"] = EMA(df, 50)
     df["ADX"] = ADX(df)
+    
     last = df.iloc[-1]
     price = last["Close"]
     ema20 = last["EMA20"] if not pd.isna(last["EMA20"]) else price
     ema50 = last["EMA50"] if not pd.isna(last["EMA50"]) else price
     adx = last["ADX"] if not pd.isna(last["ADX"]) else 0
+    
     if price > ema20 > ema50 and adx > 25:
         return "🟢 BULLISH (Strong)"
     elif price > ema20 > ema50:
@@ -496,52 +538,83 @@ def analyze_trend(df, timeframe_name):
         return "🟡 SIDEWAYS"
 
 # =========================================================
-# RISK MANAGEMENT - RR 3:7
+# RISK MANAGEMENT - RR 3:7 DENGAN TRAILING STOP
 # =========================================================
 def calculate_risk_management_advanced(df_5m, entry_signal, entry_price, rr_sl=3.0, rr_tp=7.0, use_trailing=True):
+    """
+    Advanced Risk Management dengan:
+    - SL = rr_sl x ATR
+    - TP = rr_tp x ATR
+    - Trailing Stop otomatis
+    - Dynamic adjustment berdasarkan volatilitas
+    """
+    
+    # ATR periode 20 untuk stabilitas
     atr = ATR(df_5m, period=20)
     atr_value = atr.iloc[-1] if len(atr) > 0 and not pd.isna(atr.iloc[-1]) else 0.01
+    
+    # Minimal ATR 0.5% dari harga
     min_atr = entry_price * 0.005
     atr_value = max(atr_value, min_atr)
+    
+    # === HITUNG SL & TP ===
     if entry_signal and "BUY" in entry_signal:
         stop_loss = entry_price - atr_value * rr_sl
         take_profit = entry_price + atr_value * rr_tp
+        
+        # === TRAILING STOP UNTUK BUY ===
         if use_trailing and len(df_5m) > 5:
             highest_high = df_5m["High"].tail(5).max()
+            # Naikkan SL ke 0.5 ATR di bawah highest high
             new_sl = max(highest_high - atr_value * 0.5, stop_loss)
-            stop_loss = max(new_sl, stop_loss)
+            stop_loss = max(new_sl, stop_loss)  # SL tidak pernah turun
+        
     elif entry_signal and "SELL" in entry_signal:
         stop_loss = entry_price + atr_value * rr_sl
         take_profit = entry_price - atr_value * rr_tp
+        
+        # === TRAILING STOP UNTUK SELL ===
         if use_trailing and len(df_5m) > 5:
             lowest_low = df_5m["Low"].tail(5).min()
             new_sl = min(lowest_low + atr_value * 0.5, stop_loss)
-            stop_loss = min(new_sl, stop_loss)
+            stop_loss = min(new_sl, stop_loss)  # SL tidak pernah naik
+    
     else:
         stop_loss = take_profit = None
+    
+    # === VALIDASI ===
     if stop_loss and take_profit:
+        # SL tidak boleh terlalu dekat (minimal 1%)
         if abs(stop_loss - entry_price) / entry_price < 0.01:
             stop_loss = entry_price * 0.99 if entry_signal and "BUY" in entry_signal else entry_price * 1.01
+    
     return stop_loss, take_profit, atr_value
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME
+# ANALISIS MULTI TIMEFRAME (DENGAN STABILITAS & RR 3:7)
 # =========================================================
 def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
+    # --- 1H ---
     df_1h = get_data_safe(symbol, "1h", min_candles=30)
     if df_1h is None:
         return None
+    
+    # --- 15M ---
     df_15m = get_data_safe(symbol, "15m", min_candles=50)
     if df_15m is None:
         df_15m = df_1h.copy()
+    
+    # --- 5M ---
     df_5m = get_data_safe(symbol, "5m", min_candles=20)
     if df_5m is None:
         df_5m = df_15m.copy()
     
+    # --- TREND ANALYSIS ---
     trend_1h = analyze_trend(df_1h, "1H")
     trend_15m = analyze_trend(df_15m, "15M")
     trend_5m = analyze_trend(df_5m, "5M")
     
+    # --- 15M BB Analysis ---
     df_15m["RSI"] = RSI(df_15m, 14)
     df_15m["MACD"], df_15m["MACD_SIGNAL"], df_15m["MACD_HIST"] = MACD(df_15m)
     df_15m["STOCH_K"], df_15m["STOCH_D"] = StochasticRSI(df_15m)
@@ -555,38 +628,48 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     macd_hist = last_15m["MACD_HIST"] if not pd.isna(last_15m["MACD_HIST"]) else 0
     macd_line = last_15m["MACD"] if not pd.isna(last_15m["MACD"]) else 0
     macd_signal = last_15m["MACD_SIGNAL"] if not pd.isna(last_15m["MACD_SIGNAL"]) else 0
+    
     bb_upper = last_15m["BB_UPPER"] if not pd.isna(last_15m["BB_UPPER"]) else price_15m * 1.05
     bb_lower = last_15m["BB_LOWER"] if not pd.isna(last_15m["BB_LOWER"]) else price_15m * 0.95
     bb_middle = last_15m["BB_MIDDLE"] if not pd.isna(last_15m["BB_MIDDLE"]) else price_15m
     
+    # --- SUPPORT/RESISTANCE 15M ---
     period = 20
     recent_high = df_15m["High"].tail(period).max()
     recent_low = df_15m["Low"].tail(period).min()
     pivot = (df_15m["High"].tail(period).max() + df_15m["Low"].tail(period).min() + df_15m["Close"].tail(period).mean()) / 3
     r1 = 2 * pivot - recent_low
     s1 = 2 * pivot - recent_high
+    
     support = s1
     resistance = r1
     
+    # --- BUFFER LEVEL (STABILITAS) ---
     support_buffer = support * (1 - buffer_pct / 100)
     resistance_buffer = resistance * (1 + buffer_pct / 100)
+    
+    # --- KONFIRMASI CANDLE (STABILITAS) ---
     support_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > support_buffer) >= confirmation_candles
     resistance_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > resistance_buffer) >= confirmation_candles
     
+    # --- BB SCORING ---
     bb_score = 0
     bb_reasons = []
+    
     if rsi_15m < 30 and price_15m < bb_lower:
         bb_score += 25
         bb_reasons.append("RSI Oversold + BB Bottom")
     elif rsi_15m > 70 and price_15m > bb_upper:
         bb_score -= 25
         bb_reasons.append("RSI Overbought + BB Top")
+    
     if macd_hist > 0 and macd_line > macd_signal and price_15m > bb_middle:
         bb_score += 30
         bb_reasons.append("MACD Bullish + BB Middle")
     elif macd_hist < 0 and macd_line < macd_signal and price_15m < bb_middle:
         bb_score -= 30
         bb_reasons.append("MACD Bearish + BB Middle")
+    
     if stoch_k < 20 and stoch_d < 20 and price_15m < bb_lower:
         bb_score += 20
         bb_reasons.append("Stoch Oversold + BB Bottom")
@@ -594,15 +677,19 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
         bb_score -= 20
         bb_reasons.append("Stoch Overbought + BB Top")
     
+    # --- 5M ENTRY SIGNAL (DENGAN STABILITAS) ---
     df_5m["RSI"] = RSI(df_5m, 14)
     df_5m["Volume_MA"] = df_5m["Volume"].rolling(5).mean()
+    
     last_5m = df_5m.iloc[-1]
     price_5m = last_5m["Close"]
     rsi_5m = last_5m["RSI"] if not pd.isna(last_5m["RSI"]) else 50
     
+    # --- VOLUME SPIKE KONSISTEN (2 CANDLE TERAKHIR) ---
     vol = df_5m["Volume"].iloc[-1]
     vol_ma = df_5m["Volume_MA"].iloc[-1] if not pd.isna(df_5m["Volume_MA"].iloc[-1]) else vol
     vol_spike = vol > vol_ma * 1.5 if vol_ma > 0 else False
+    
     if len(df_5m) > 1:
         vol_prev = df_5m["Volume"].iloc[-2]
         vol_ma_prev = df_5m["Volume_MA"].iloc[-2] if not pd.isna(df_5m["Volume_MA"].iloc[-2]) else vol_prev
@@ -611,12 +698,19 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     else:
         vol_spike_confirmed = vol_spike
     
-    confirmations = sum([support_confirmed, resistance_confirmed, vol_spike_confirmed])
+    # --- HITUNG KONFIRMASI ---
+    confirmations = sum([
+        support_confirmed,
+        resistance_confirmed,
+        vol_spike_confirmed
+    ])
     
+    # --- ENTRY SIGNAL DENGAN FILTER KONFIRMASI ---
     entry_signal = None
     is_bullish = "BULLISH" in trend_1h
     is_bearish = "BEARISH" in trend_1h
     
+    # Filter: Minimal konfirmasi
     if confirmations >= min_confirmations:
         if is_bullish:
             if support_confirmed and rsi_5m < 45 and bb_score >= 30:
@@ -636,7 +730,7 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
                 entry_signal = "🔴 STRONG SELL (Pullback Confirmed)"
             elif resistance_confirmed and vol_spike_confirmed:
                 entry_signal = "🔴 SELL (Pullback Confirmed)"
-        else:
+        else:  # SIDEWAYS
             if resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
                 entry_signal = "🟢 BUY (Breakout Confirmed)"
             elif resistance_confirmed and vol_spike_confirmed:
@@ -646,10 +740,16 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
             elif support_confirmed and vol_spike_confirmed:
                 entry_signal = "🔴 SELL (Breakdown Confirmed)"
     
+    # === RISK MANAGEMENT DENGAN RR 3:7 ===
     if entry_signal:
         entry_price = df_5m["Close"].iloc[-1]
         stop_loss, take_profit, atr_value = calculate_risk_management_advanced(
-            df_5m, entry_signal, entry_price, rr_sl, rr_tp, use_trailing
+            df_5m,
+            entry_signal,
+            entry_price,
+            rr_sl=rr_sl,
+            rr_tp=rr_tp,
+            use_trailing=use_trailing
         )
     else:
         entry_price = stop_loss = take_profit = None
@@ -697,228 +797,292 @@ def create_chart(result, symbol, currency_rate):
         row_heights=[0.35, 0.2, 0.15, 0.15, 0.15],
         subplot_titles=("Price & Indicators (5M)", "RSI + BB (15M)", "MACD (15M)", "Stochastic (15M)", "Volume")
     )
+    
     df = result["df_5m"]
     df_15m = result["df_15m"]
     
-    fig.add_trace(go.Candlestick(
-        x=df["Time"], open=df["Open"]*currency_rate, high=df["High"]*currency_rate,
-        low=df["Low"]*currency_rate, close=df["Close"]*currency_rate,
-        increasing_line_color="#00ff88", decreasing_line_color="#ff3b5c", name="Price (5M)"
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=df["Close"].ewm(span=20).mean()*currency_rate,
-                             line=dict(color="#00a2ff", width=1.5), name="EMA20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=df["Close"].ewm(span=50).mean()*currency_rate,
-                             line=dict(color="#ffaa00", width=1.5, dash="dash"), name="EMA50"), row=1, col=1)
+    # === ROW 1: CANDLESTICK ===
+    fig.add_trace(
+        go.Candlestick(
+            x=df["Time"],
+            open=df["Open"] * currency_rate,
+            high=df["High"] * currency_rate,
+            low=df["Low"] * currency_rate,
+            close=df["Close"] * currency_rate,
+            increasing_line_color="#00ff88",
+            decreasing_line_color="#ff3b5c",
+            name="Price (5M)"
+        ),
+        row=1, col=1
+    )
     
-    fig.add_hline(y=result["support"]*currency_rate, line_dash="dot", line_color="green",
-                  annotation_text=f"S {format_price(result['support']*currency_rate)}", row=1, col=1)
-    fig.add_hline(y=result["resistance"]*currency_rate, line_dash="dot", line_color="red",
-                  annotation_text=f"R {format_price(result['resistance']*currency_rate)}", row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["Close"].ewm(span=20).mean() * currency_rate,
+            line=dict(color="#00a2ff", width=1.5),
+            name="EMA20"
+        ),
+        row=1, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["Close"].ewm(span=50).mean() * currency_rate,
+            line=dict(color="#ffaa00", width=1.5, dash="dash"),
+            name="EMA50"
+        ),
+        row=1, col=1
+    )
     
+    # Support & Resistance
+    fig.add_hline(
+        y=result["support"] * currency_rate,
+        line_dash="dot",
+        line_color="green",
+        annotation_text=f"S {format_price(result['support'] * currency_rate)}",
+        annotation_position="bottom right",
+        row=1, col=1
+    )
+    fig.add_hline(
+        y=result["resistance"] * currency_rate,
+        line_dash="dot",
+        line_color="red",
+        annotation_text=f"R {format_price(result['resistance'] * currency_rate)}",
+        annotation_position="top right",
+        row=1, col=1
+    )
+    
+    # Entry, SL, TP
     if result["entry_signal"] and result["entry_price"]:
-        fig.add_hline(y=result["entry_price"]*currency_rate, line_dash="solid", line_color="#00ff88",
-                      annotation_text="ENTRY", row=1, col=1)
+        fig.add_hline(
+            y=result["entry_price"] * currency_rate,
+            line_dash="solid",
+            line_color="#00ff88",
+            annotation_text="ENTRY",
+            annotation_position="top left",
+            row=1, col=1
+        )
         if result["stop_loss"]:
-            fig.add_hline(y=result["stop_loss"]*currency_rate, line_dash="dash", line_color="#ff0000",
-                          annotation_text=f"SL {format_price(result['stop_loss']*currency_rate)}", row=1, col=1)
+            fig.add_hline(
+                y=result["stop_loss"] * currency_rate,
+                line_dash="dash",
+                line_color="#ff0000",
+                annotation_text=f"SL {format_price(result['stop_loss'] * currency_rate)}",
+                annotation_position="bottom left",
+                row=1, col=1
+            )
         if result["take_profit"]:
-            fig.add_hline(y=result["take_profit"]*currency_rate, line_dash="dash", line_color="#00ff00",
-                          annotation_text=f"TP {format_price(result['take_profit']*currency_rate)}", row=1, col=1)
+            fig.add_hline(
+                y=result["take_profit"] * currency_rate,
+                line_dash="dash",
+                line_color="#00ff00",
+                annotation_text=f"TP {format_price(result['take_profit'] * currency_rate)}",
+                annotation_position="top right",
+                row=1, col=1
+            )
     
-    fig.add_trace(go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"), row=2, col=1)
+    # === ROW 2: RSI + BB ===
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=df_15m["RSI"],
+            line=dict(color="#a855f7", width=2),
+            name="RSI (15M)"
+        ),
+        row=2, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=df_15m["BB_UPPER"] / df_15m["Close"].mean() * 100,
+            line=dict(color="rgba(255,255,255,0.2)", width=1, dash="dot"),
+            name="BB Upper %"
+        ),
+        row=2, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=df_15m["BB_LOWER"] / df_15m["Close"].mean() * 100,
+            line=dict(color="rgba(255,255,255,0.2)", width=1, dash="dot"),
+            name="BB Lower %",
+            fill='tonexty',
+            fillcolor="rgba(255,255,255,0.02)"
+        ),
+        row=2, col=1
+    )
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
     
+    # === ROW 3: MACD ===
     macd, signal, hist = MACD(df_15m)
-    fig.add_trace(go.Scatter(x=df_15m["Time"], y=macd, line=dict(color="#00a2ff", width=1.5), name="MACD"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df_15m["Time"], y=signal, line=dict(color="#ff00ff", width=1.5), name="Signal"), row=3, col=1)
-    colors_macd = ["#00ff88" if h >= 0 else "#ff3b5c" for h in hist]
-    fig.add_trace(go.Bar(x=df_15m["Time"], y=hist, marker_color=colors_macd, opacity=0.4, name="Histogram"), row=3, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=macd,
+            line=dict(color="#00a2ff", width=1.5),
+            name="MACD"
+        ),
+        row=3, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=signal,
+            line=dict(color="#ff00ff", width=1.5),
+            name="Signal"
+        ),
+        row=3, col=1
+    )
+    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in hist]
+    fig.add_trace(
+        go.Bar(
+            x=df_15m["Time"],
+            y=hist,
+            marker_color=colors,
+            opacity=0.4,
+            name="Histogram"
+        ),
+        row=3, col=1
+    )
     
-    fig.add_trace(go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_D"], line=dict(color="#ff00ff", width=1.5), name="Stoch D"), row=4, col=1)
+    # === ROW 4: STOCHASTIC ===
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=df_15m["STOCH_K"],
+            line=dict(color="#ffaa00", width=1.5),
+            name="Stoch K"
+        ),
+        row=4, col=1
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df_15m["Time"],
+            y=df_15m["STOCH_D"],
+            line=dict(color="#ff00ff", width=1.5),
+            name="Stoch D"
+        ),
+        row=4, col=1
+    )
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
     
-    colors_vol = ["#00ff88" if c >= o else "#ff3b5c" for c, o in zip(df["Close"], df["Open"])]
-    fig.add_trace(go.Bar(x=df["Time"], y=df["Volume"], marker_color=colors_vol, opacity=0.5, name="Volume"), row=5, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=df["Volume"].rolling(5).mean(), line=dict(color="rgba(255,255,255,0.3)", width=1), name="Volume MA"), row=5, col=1)
+    # === ROW 5: VOLUME ===
+    colors_vol = ["#00ff88" if c >= o else "#ff3b5c" 
+                  for c, o in zip(df["Close"], df["Open"])]
+    fig.add_trace(
+        go.Bar(
+            x=df["Time"],
+            y=df["Volume"],
+            marker_color=colors_vol,
+            opacity=0.5,
+            name="Volume"
+        ),
+        row=5, col=1
+    )
     
-    fig.update_layout(template="plotly_dark", height=1100,
-                      title=dict(text=f"<b>{symbol} - Multi Timeframe Analysis (RR 3:7)</b>",
-                                font=dict(color="#f1f5f9", size=22), x=0.5, xanchor="center"),
-                      hovermode="x unified", dragmode="pan", xaxis_rangeslider_visible=False,
-                      paper_bgcolor="#0a0a1a", plot_bgcolor="#0a0a1a", font=dict(color="#94a3b8"),
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-                      margin=dict(l=10, r=10, t=50, b=10))
+    fig.add_trace(
+        go.Scatter(
+            x=df["Time"],
+            y=df["Volume"].rolling(5).mean(),
+            line=dict(color="rgba(255,255,255,0.3)", width=1),
+            name="Volume MA"
+        ),
+        row=5, col=1
+    )
+    
+    fig.update_layout(
+        template="plotly_dark",
+        height=1100,
+        title=dict(
+            text=f"<b>{symbol} - Multi Timeframe Analysis (RR 3:7)</b>",
+            font=dict(color="#f1f5f9", size=22),
+            x=0.5,
+            xanchor="center"
+        ),
+        hovermode="x unified",
+        dragmode="pan",
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor="#0a0a1a",
+        plot_bgcolor="#0a0a1a",
+        font=dict(color="#94a3b8"),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=10)
+        ),
+        margin=dict(l=10, r=10, t=50, b=10)
+    )
+    
     fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
+    
     return fig
 
 # =========================================================
-# FUNGSI GET POSITION STATUS
+# MAIN LOOP
 # =========================================================
-def get_position_status(symbol):
-    for pos in st.session_state.positions:
-        if pos["symbol"] == symbol:
-            return pos
-    return None
 
-# =========================================================
-# SIDEBAR
-# =========================================================
-with st.sidebar:
-    st.title("⚙️ Settings")
-    
-    st.subheader("📊 Trading Settings")
-    refresh = st.slider("🔄 Refresh (detik)", 5, 60, 10)
-    currency = st.selectbox("💱 Currency", ["USD", "IDR"])
-    
-    st.divider()
-    
-    st.subheader("🎯 Risk Management (RR 3:7)")
-    rr_sl = st.slider("Stop Loss (ATR)", 1.0, 5.0, 3.0, 0.5)
-    rr_tp = st.slider("Take Profit (ATR)", 3.0, 12.0, 7.0, 0.5)
-    use_trailing = st.toggle("🚀 Use Trailing Stop", value=True)
-    min_confirmations = st.slider("Minimal Konfirmasi", 1, 3, 2)
-    
-    st.divider()
-    
-    st.subheader("🛡️ Signal Stability")
-    hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15)
-    buffer_pct = st.slider("Buffer Level (%)", 0.1, 1.0, 0.5, 0.1)
-    confirmation_candles = st.slider("Konfirmasi Candle", 1, 5, 3)
-    
-    st.divider()
-    
-    st.subheader("📋 Watchlist")
-    sheet_status = load_sheet()
-    if sheet_status:
-        st.success("✅ Google Sheets Connected")
-    else:
-        st.error("❌ Google Sheets Error")
-    
-    col_add1, col_add2 = st.columns([3, 1])
-    with col_add1:
-        new_coin = st.text_input("Add Coin", placeholder="PEPE", label_visibility="collapsed")
-    with col_add2:
-        if st.button("➕", use_container_width=True):
-            if new_coin:
-                coin = new_coin.upper().strip()
-                if coin not in st.session_state.watchlist:
-                    if add_coin_to_watchlist(coin):
-                        st.session_state.watchlist.append(coin)
-                        st.rerun()
-                    else:
-                        st.error("❌ Gagal tambah coin!")
-                else:
-                    st.warning(f"⚠️ {coin} already exists!")
-    
-    st.markdown("**Your Coins:**")
-    cols = st.columns(3)
-    for idx, coin in enumerate(st.session_state.watchlist):
-        col_idx = idx % 3
-        with cols[col_idx]:
-            if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
-                if remove_coin_from_watchlist(coin):
-                    st.session_state.watchlist.remove(coin)
-                    st.rerun()
-                else:
-                    st.error(f"❌ Gagal hapus {coin}!")
-    
-    st.divider()
-    
-    st.subheader("📱 Telegram Alert")
-    if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram("🚀 Dashboard Aktif! Google Sheets + Telegram Connected.")
-        st.success("✅ Pesan test terkirim!")
-    
-    st.divider()
-    
-    st.subheader("📊 Status")
-    st.metric("Total Positions", len(st.session_state.positions))
-    st.metric("Pending Signals", len(st.session_state.pending_signal))
-    win_rate = st.session_state.performance_stats['wins'] / max(1, st.session_state.performance_stats['total_signals']) * 100
-    st.metric("Win Rate", f"{win_rate:.1f}%")
+# --- CLEANUP PENDING SIGNALS (EXPIRED) ---
+current_time = datetime.now()
+expired_signals = []
+for symbol, data in st.session_state.pending_signal.items():
+    elapsed = (current_time - data["time"]).seconds / 60
+    if elapsed > hold_minutes:
+        expired_signals.append(symbol)
 
-# =========================================================
-# AUTO REFRESH
-# =========================================================
-st_autorefresh(interval=refresh * 1000, key="refresh")
+for symbol in expired_signals:
+    del st.session_state.pending_signal[symbol]
 
-# =========================================================
-# MAIN - CALCULATE CURRENCY
-# =========================================================
-usd_to_idr = get_usd_idr()
-currency_rate = usd_to_idr if currency == "IDR" else 1
+# --- SIGNAL SUMMARY ---
+st.subheader("📊 Signal Summary")
 
-# =========================================================
-# TAB 1: SCANNER | TAB 2: POSITIONS
-# =========================================================
-tab1, tab2 = st.tabs(["📊 Scanner & Signals", "📈 My Positions"])
+all_signals = []
+progress_bar = st.progress(0)
+status_text = st.empty()
 
-# =========================================================
-# TAB 1: SCANNER
-# =========================================================
-with tab1:
-    # --- CLEANUP PENDING SIGNALS (EXPIRED) ---
-    current_time = datetime.now()
-    expired_signals = []
-    for symbol, data in st.session_state.pending_signal.items():
-        try:
-            elapsed = (current_time - datetime.fromisoformat(data["time"])).seconds / 60
-        except:
-            elapsed = 999
-        if elapsed > hold_minutes:
-            expired_signals.append(symbol)
-    for symbol in expired_signals:
-        del st.session_state.pending_signal[symbol]
-        save_pending_to_sheets(st.session_state.pending_signal)
+for idx, symbol in enumerate(st.session_state.watchlist):
+    progress_bar.progress((idx + 1) / len(st.session_state.watchlist))
+    status_text.text(f"🔄 Scanning {symbol}...")
     
-    # --- SIGNAL SUMMARY ---
-    st.subheader("📊 Signal Summary")
+    result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
     
-    all_signals = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    watchlist = st.session_state.watchlist
-    
-    for idx, symbol in enumerate(watchlist):
-        progress_bar.progress((idx + 1) / len(watchlist))
-        status_text.text(f"🔄 Scanning {symbol}...")
+    if result:
+        # Cek apakah ada pending signal untuk coin ini
+        pending = st.session_state.pending_signal.get(symbol)
+        if pending:
+            entry_display = pending["signal"]
+            entry_price_display = format_price(pending["entry"] * currency_rate)
+            sl_display = format_price(pending["sl"] * currency_rate)
+            tp_display = format_price(pending["tp"] * currency_rate)
+            is_pending = True
+        else:
+            entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
+            entry_price_display = format_price(result["entry_price"] * currency_rate) if result["entry_price"] else "-"
+            sl_display = format_price(result["stop_loss"] * currency_rate) if result["stop_loss"] else "-"
+            tp_display = format_price(result["take_profit"] * currency_rate) if result["take_profit"] else "-"
+            is_pending = False
         
-        result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
-        
-        if result:
-            pending = st.session_state.pending_signal.get(symbol)
-            if pending:
-                entry_display = pending["signal"]
-                is_pending = True
-                is_taken = pending.get("taken", False)
-            else:
-                entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
-                is_pending = False
-                is_taken = False
+        # Simpan sinyal baru ke pending jika ada
+        if result["entry_signal"] and symbol not in st.session_state.pending_signal:
+            st.session_state.pending_signal[symbol] = {
+                "signal": result["entry_signal"],
+                "time": datetime.now(),
+                "entry": result["entry_price"],
+                "sl": result["stop_loss"],
+                "tp": result["take_profit"]
+            }
             
-            existing_pos = get_position_status(symbol)
-            has_position = existing_pos is not None
-            
-            if result["entry_signal"] and symbol not in st.session_state.pending_signal:
-                st.session_state.pending_signal[symbol] = {
-                    "signal": result["entry_signal"],
-                    "time": datetime.now().isoformat(),
-                    "entry": result["entry_price"],
-                    "sl": result["stop_loss"],
-                    "tp": result["take_profit"],
-                    "taken": False
-                }
-                save_pending_to_sheets(st.session_state.pending_signal)
-                
-                if result["entry_signal"]:
-                    rr_ratio = ((result["take_profit"] / result["entry_price"] - 1) / 
-                               (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
-                    message = f"""⚡ NEW SIGNAL! (RR 3:7)
+            # Kirim Telegram
+            if result["entry_signal"]:
+                rr_ratio = ((result["take_profit"] / result["entry_price"] - 1) / 
+                           (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+                message = f"""⚡ NEW SIGNAL! (RR 3:7)
 
 Coin : {symbol}
 Signal : {result['entry_signal']}
@@ -929,277 +1093,165 @@ BB Score : {result['bb_score']}
 Confirmations : {result['confirmations']}/3
 
 Entry : ${result['entry_price']:.4f}
-SL : ${result['stop_loss']:.4f}
-TP : ${result['take_profit']:.4f}
+SL : ${result['stop_loss']:.4f} ({format_percentage((result['stop_loss']/result['entry_price'] - 1)*100)})
+TP : ${result['take_profit']:.4f} ({format_percentage((result['take_profit']/result['entry_price'] - 1)*100)})
 RR Ratio : {rr_ratio:.2f}
 
 Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
-                    send_telegram(message)
-                    st.session_state.performance_stats["total_signals"] += 1
-            
-            all_signals.append({
-                "Coin": symbol,
-                "Trend 1H": result["trend_1h"],
-                "Trend 15M": result["trend_15m"],
-                "Trend 5M": result["trend_5m"],
-                "Signal": "🔵 TAKEN" if is_taken else "🟡 PENDING" if is_pending else entry_display,
-                "BB Score": result["bb_score"],
-                "RSI 5M": f"{result['rsi_5m']:.1f}",
-                "RSI 15M": f"{result['rsi_15m']:.1f}",
-                "Entry": format_price(result["entry_price"] * currency_rate) if result["entry_price"] else "-",
-                "SL": format_price(result["stop_loss"] * currency_rate) if result["stop_loss"] else "-",
-                "TP": format_price(result["take_profit"] * currency_rate) if result["take_profit"] else "-",
-                "Confirm": f"{result['confirmations']}/3",
-                "Position": "✅ Active" if has_position else "❌ No"
-            })
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if all_signals:
-        df_signals = pd.DataFrame(all_signals)
-        st.dataframe(df_signals, use_container_width=True, hide_index=True)
-    else:
-        st.info("ℹ️ Tidak ada data")
-    
-    # =========================================================
-    # PENDING SIGNALS DISPLAY
-    # =========================================================
-    if st.session_state.pending_signal:
-        st.divider()
-        st.subheader("⏳ Pending Signals (Aktif)")
-        st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit | RR 3:7")
+                send_telegram(message)
+                
+                # Update stats
+                st.session_state.performance_stats["total_signals"] += 1
         
-        cols = st.columns(min(len(st.session_state.pending_signal), 4))
-        for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
-            col_idx = idx % len(cols)
-            with cols[col_idx]:
-                try:
-                    elapsed = (datetime.now() - datetime.fromisoformat(data["time"])).seconds / 60
-                except:
-                    elapsed = 0
-                remaining = max(0, hold_minutes - elapsed)
-                rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
-                is_taken = data.get("taken", False)
-                taken_text = "✅ TAKEN" if is_taken else "⏳ Available"
-                
-                st.markdown(f"""
-                <div class="pending-signal">
-                    <b>{symbol}</b> - {taken_text}<br>
-                    {data['signal']}<br>
-                    Entry: {format_price(data['entry'] * currency_rate)}<br>
-                    SL: {format_price(data['sl'] * currency_rate)}<br>
-                    TP: {format_price(data['tp'] * currency_rate)}<br>
-                    RR: {rr:.2f}<br>
-                    ⏱️ {remaining:.0f}m remaining
-                </div>
-                """, unsafe_allow_html=True)
-                
-                if not is_taken and remaining > 0:
-                    if st.button(f"✅ Take {symbol}", key=f"take_{symbol}"):
-                        new_position = {
-                            "symbol": symbol,
-                            "entry_price": data["entry"],
-                            "quantity": 0.01,
-                            "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                            "signal": data["signal"],
-                            "sl": data["sl"],
-                            "tp": data["tp"],
-                            "created_at": datetime.now().isoformat()
-                        }
-                        st.session_state.positions.append(new_position)
-                        save_positions_to_sheets(st.session_state.positions)
-                        
-                        st.session_state.pending_signal[symbol]["taken"] = True
-                        save_pending_to_sheets(st.session_state.pending_signal)
-                        
-                        send_telegram(f"✅ POSITION TAKEN: {symbol} at ${data['entry']:.4f}")
-                        st.success(f"✅ {symbol} position added!")
-                        st.rerun()
-    
-    # =========================================================
-    # COIN DETAIL
-    # =========================================================
+        all_signals.append({
+            "Coin": symbol,
+            "Trend 1H": result["trend_1h"],
+            "Trend 15M": result["trend_15m"],
+            "Trend 5M": result["trend_5m"],
+            "Signal": "🟡 PENDING" if is_pending else entry_display,
+            "BB Score": result["bb_score"],
+            "RSI 5M": f"{result['rsi_5m']:.1f}",
+            "RSI 15M": f"{result['rsi_15m']:.1f}",
+            "Entry": entry_price_display,
+            "SL": sl_display,
+            "TP": tp_display,
+            "Confirm": f"{result['confirmations']}/3"
+        })
+
+progress_bar.empty()
+status_text.empty()
+
+if all_signals:
+    df_signals = pd.DataFrame(all_signals)
+    st.dataframe(df_signals, use_container_width=True, hide_index=True)
+else:
+    st.info("ℹ️ Tidak ada data")
+
+# =========================================================
+# PENDING SIGNALS DISPLAY
+# =========================================================
+if st.session_state.pending_signal:
     st.divider()
-    st.subheader("📈 Coin Detail")
+    st.subheader("⏳ Pending Signals (Aktif)")
+    st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit | RR 3:7")
     
-    selected_coin = st.selectbox("Select Coin", watchlist)
-    
-    result = analyze_mtf(selected_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
-    
-    if result:
-        col1, col2, col3, col4, col5, col6 = st.columns(6)
-        col1.metric("Trend 1H", result["trend_1h"])
-        col2.metric("Trend 15M", result["trend_15m"])
-        col3.metric("Trend 5M", result["trend_5m"])
-        col4.metric("Support", format_price(result["support"] * currency_rate))
-        col5.metric("Resistance", format_price(result["resistance"] * currency_rate))
-        col6.metric("BB Score", f"{result['bb_score']}/100")
-        
-        pending = st.session_state.pending_signal.get(selected_coin)
-        
-        if pending and not pending.get("taken", False):
-            rr = ((pending["tp"] / pending["entry"] - 1) / (pending["sl"] / pending["entry"] - 1)) if pending["sl"] else 0
+    cols = st.columns(min(len(st.session_state.pending_signal), 4))
+    for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
+        col_idx = idx % len(cols)
+        with cols[col_idx]:
+            elapsed = (datetime.now() - data["time"]).seconds / 60
+            remaining = max(0, hold_minutes - elapsed)
+            rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
             st.markdown(f"""
             <div class="pending-signal">
-                ⏳ PENDING SIGNAL: {pending['signal']}<br>
-                Entry: {format_price(pending['entry'] * currency_rate)} | 
-                SL: {format_price(pending['sl'] * currency_rate)} | 
-                TP: {format_price(pending['tp'] * currency_rate)}<br>
-                RR: {rr:.2f}
+                <b>{symbol}</b><br>
+                {data['signal']}<br>
+                Entry: {format_price(data['entry'] * currency_rate)}<br>
+                SL: {format_price(data['sl'] * currency_rate)}<br>
+                TP: {format_price(data['tp'] * currency_rate)}<br>
+                RR: {rr:.2f}<br>
+                ⏱️ {remaining:.0f}m remaining
             </div>
             """, unsafe_allow_html=True)
-            
-            if st.button(f"✅ Take This Trade ({selected_coin})"):
-                new_position = {
-                    "symbol": selected_coin,
-                    "entry_price": pending["entry"],
-                    "quantity": 0.01,
-                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                    "signal": pending["signal"],
-                    "sl": pending["sl"],
-                    "tp": pending["tp"],
-                    "created_at": datetime.now().isoformat()
-                }
-                st.session_state.positions.append(new_position)
-                save_positions_to_sheets(st.session_state.positions)
-                st.session_state.pending_signal[selected_coin]["taken"] = True
-                save_pending_to_sheets(st.session_state.pending_signal)
-                send_telegram(f"✅ POSITION TAKEN: {selected_coin} at ${pending['entry']:.4f}")
-                st.success(f"✅ {selected_coin} position added!")
-                st.rerun()
-        elif result["entry_signal"]:
-            if "BUY" in result["entry_signal"]:
-                st.markdown(f'<div class="signal-buy">🚀 {result["entry_signal"]}</div>', unsafe_allow_html=True)
-            elif "SELL" in result["entry_signal"]:
-                st.markdown(f'<div class="signal-sell">🔻 {result["entry_signal"]}</div>', unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div class="signal-hold">⏳ WAIT - No Signal</div>', unsafe_allow_html=True)
+
+# =========================================================
+# COIN DETAIL
+# =========================================================
+st.divider()
+st.subheader("📈 Coin Detail")
+
+selected_coin = st.selectbox(
+    "Select Coin",
+    st.session_state.watchlist,
+    index=st.session_state.watchlist.index(st.session_state.selected_coin) 
+    if st.session_state.selected_coin in st.session_state.watchlist else 0
+)
+st.session_state.selected_coin = selected_coin
+
+result = analyze_mtf(selected_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
+
+if result:
+    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1.metric("Trend 1H", result["trend_1h"])
+    col2.metric("Trend 15M", result["trend_15m"])
+    col3.metric("Trend 5M", result["trend_5m"])
+    col4.metric("Support", format_price(result["support"] * currency_rate))
+    col5.metric("Resistance", format_price(result["resistance"] * currency_rate))
+    col6.metric("BB Score", f"{result['bb_score']}/100")
+    
+    # Status Konfirmasi
+    col_conf1, col_conf2, col_conf3, col_conf4 = st.columns(4)
+    col_conf1.metric("Support Confirmed", "✅" if result["support_confirmed"] else "❌")
+    col_conf2.metric("Resistance Confirmed", "✅" if result["resistance_confirmed"] else "❌")
+    col_conf3.metric("Volume Spike", "✅" if result["vol_spike_confirmed"] else "❌")
+    col_conf4.metric("Total Confirm", f"{result['confirmations']}/3")
+    
+    if result["bb_reasons"]:
+        with st.expander("📋 BB Analysis Details", expanded=True):
+            for reason in result["bb_reasons"]:
+                st.write(f"• {reason}")
+    
+    # Cek pending signal
+    pending = st.session_state.pending_signal.get(selected_coin)
+    
+    if pending:
+        rr = ((pending["tp"] / pending["entry"] - 1) / (pending["sl"] / pending["entry"] - 1)) if pending["sl"] else 0
+        st.markdown(f"""
+        <div class="pending-signal">
+            ⏳ PENDING SIGNAL: {pending['signal']}<br>
+            Entry: {format_price(pending['entry'] * currency_rate)} | 
+            SL: {format_price(pending['sl'] * currency_rate)} | 
+            TP: {format_price(pending['tp'] * currency_rate)}<br>
+            RR Ratio: {rr:.2f} | 
+            ⏱️ {max(0, hold_minutes - (datetime.now() - pending['time']).seconds/60):.0f}m remaining
+        </div>
+        """, unsafe_allow_html=True)
+    elif result["entry_signal"]:
+        rr = ((result["take_profit"] / result["entry_price"] - 1) / 
+              (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
         
-        fig = create_chart(result, selected_coin, currency_rate)
-        st.plotly_chart(fig, use_container_width=True)
-
-# =========================================================
-# TAB 2: MY POSITIONS
-# =========================================================
-with tab2:
-    st.subheader("📈 My Positions")
-    
-    # Summary
-    total_value = 0
-    total_pnl = 0
-    winning_positions = 0
-    
-    for pos in st.session_state.positions:
-        try:
-            df = get_data(pos["symbol"], "1h", "1d")
-            if df is not None and not df.empty:
-                current_price = df["Close"].iloc[-1]
-                value = current_price * pos["quantity"]
-                invested = pos["entry_price"] * pos["quantity"]
-                pnl = value - invested
-                total_value += value
-                total_pnl += pnl
-                if pnl > 0:
-                    winning_positions += 1
-        except:
-            pass
-    
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("💰 Total Value", f"${total_value:,.2f}")
-    c2.metric("📈 Total P&L", f"${total_pnl:,.2f}", delta=f"{total_pnl:+.2f}", delta_color="normal")
-    c3.metric("🎯 Win Rate", f"{winning_positions / max(1, len(st.session_state.positions)) * 100:.0f}%")
-    c4.metric("📊 Positions", len(st.session_state.positions))
-    
-    st.divider()
-    
-    # Position Cards
-    if st.session_state.positions:
-        for idx, pos in enumerate(st.session_state.positions):
-            symbol = pos["symbol"]
-            entry_price = pos["entry_price"]
-            quantity = pos["quantity"]
-            entry_date = pos.get("entry_date", "N/A")
-            signal = pos.get("signal", "Unknown")
-            
-            df = get_data(symbol, "1h", "1d")
-            if df is not None and not df.empty:
-                current_price = df["Close"].iloc[-1]
-                pnl = (current_price - entry_price) * quantity
-                pnl_pct = ((current_price - entry_price) / entry_price) * 100
-                
-                with st.container():
-                    col1, col2, col3 = st.columns([1, 1, 1])
-                    
-                    with col1:
-                        st.markdown(f"### {symbol}")
-                        st.caption(f"Entry: {entry_date}")
-                        if pnl > 0:
-                            st.markdown(f'<span class="profit">💰 ${pnl:,.2f} ({pnl_pct:+.2f}%)</span>', unsafe_allow_html=True)
-                        elif pnl < 0:
-                            st.markdown(f'<span class="loss">📉 ${pnl:,.2f} ({pnl_pct:+.2f}%)</span>', unsafe_allow_html=True)
-                        else:
-                            st.markdown(f'<span class="neutral">➖ ${pnl:,.2f} (0.00%)</span>', unsafe_allow_html=True)
-                        st.caption(f"Entry: ${entry_price:,.2f} | Current: ${current_price:,.2f}")
-                    
-                    with col2:
-                        st.metric("Quantity", f"{quantity:.4f}")
-                        st.metric("Value", f"${current_price * quantity:,.2f}")
-                        st.caption(f"Signal: {signal}")
-                    
-                    with col3:
-                        st.markdown("#### Actions")
-                        if st.button(f"📈 Chart", key=f"chart_pos_{idx}"):
-                            st.session_state[f"show_chart_pos_{idx}"] = not st.session_state.get(f"show_chart_pos_{idx}", False)
-                        if st.button(f"❌ Close", key=f"close_pos_{idx}"):
-                            st.session_state.signal_history.append({
-                                "symbol": symbol,
-                                "entry_price": entry_price,
-                                "exit_price": current_price,
-                                "quantity": quantity,
-                                "pnl": pnl,
-                                "exit_date": datetime.now().isoformat()
-                            })
-                            if pnl > 0:
-                                st.session_state.performance_stats["wins"] += 1
-                            else:
-                                st.session_state.performance_stats["losses"] += 1
-                            st.session_state.performance_stats["total_profit"] += pnl
-                            
-                            del st.session_state.positions[idx]
-                            save_positions_to_sheets(st.session_state.positions)
-                            st.rerun()
-                        
-                        if st.session_state.get(f"show_chart_pos_{idx}", False):
-                            st.caption("📊 Price Chart")
-                            fig = make_subplots(rows=1, cols=1)
-                            fig.add_trace(go.Scatter(
-                                x=df["Time"].tail(30),
-                                y=df["Close"].tail(30),
-                                mode="lines",
-                                line=dict(color="#00a2ff", width=2),
-                                name="Price"
-                            ))
-                            fig.add_hline(y=entry_price, line_dash="solid", line_color="#ff00ff",
-                                         annotation_text=f"Entry: ${entry_price:.2f}")
-                            fig.update_layout(template="plotly_dark", height=200, margin=dict(l=10, r=10, t=20, b=20),
-                                             paper_bgcolor="#0a0a1a", plot_bgcolor="#0a0a1a")
-                            st.plotly_chart(fig, use_container_width=True)
-                    
-                    st.divider()
-            else:
-                st.warning(f"⚠️ No data for {symbol}")
+        if "BUY" in result["entry_signal"]:
+            st.markdown(f'<div class="signal-buy">🚀 {result["entry_signal"]}</div>', unsafe_allow_html=True)
+        elif "SELL" in result["entry_signal"]:
+            st.markdown(f'<div class="signal-sell">🔻 {result["entry_signal"]}</div>', unsafe_allow_html=True)
+        
+        col_a, col_b, col_c, col_d, col_e = st.columns(5)
+        col_a.metric("Entry Price", format_price(result["entry_price"] * currency_rate))
+        col_b.metric("Stop Loss", format_price(result["stop_loss"] * currency_rate),
+                    delta=f"{format_percentage((result['stop_loss']/result['entry_price'] - 1)*100)}")
+        col_c.metric("Take Profit", format_price(result["take_profit"] * currency_rate),
+                    delta=f"{format_percentage((result['take_profit']/result['entry_price'] - 1)*100)}")
+        col_d.metric("Risk/Reward", f"{rr:.2f}")
+        col_e.metric("ATR", format_price(result["atr"] * currency_rate))
     else:
-        st.info("📭 No positions yet. Take a signal from the Scanner tab!")
+        st.markdown(f'<div class="signal-wait">⏳ WAIT - No Signal</div>', unsafe_allow_html=True)
+    
+    fig = create_chart(result, selected_coin, currency_rate)
+    st.plotly_chart(fig, use_container_width=True)
 
 # =========================================================
-# TRADE HISTORY
+# SIGNAL HISTORY
 # =========================================================
-if st.session_state.signal_history:
+if len(st.session_state.signal_history) > 0:
     st.divider()
-    st.subheader("📜 Trade History")
-    df_history = pd.DataFrame(st.session_state.signal_history)
-    st.dataframe(df_history, use_container_width=True, hide_index=True)
+    st.subheader("📜 Signal History")
+    hist_df = pd.DataFrame(st.session_state.signal_history).tail(20)
+    st.dataframe(hist_df, use_container_width=True, hide_index=True)
+
+# =========================================================
+# PERFORMANCE STATISTICS
+# =========================================================
+st.divider()
+st.subheader("📊 Performance Statistics")
+
+stats = st.session_state.performance_stats
+col1, col2, col3, col4, col5 = st.columns(5)
+
+col1.metric("Total Signals", stats["total_signals"])
+col2.metric("Wins", stats["wins"])
+col3.metric("Losses", stats["losses"])
+col4.metric("Win Rate", f"{(stats['wins'] / max(1, stats['total_signals']) * 100):.1f}%")
+col5.metric("Total Profit", f"${stats['total_profit']:.2f}")
 
 # =========================================================
 # FOOTER
@@ -1208,8 +1260,8 @@ st.divider()
 st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
 💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
-📊 Total Coins: {len(st.session_state.watchlist)} | 📈 Positions: {len(st.session_state.positions)}  
+📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
 🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
-🚀 Trailing Stop: {'Active' if use_trailing else 'Inactive'}  
-📱 Telegram: {'✅' if st.secrets.get('TELEGRAM_BOT_TOKEN') else '❌'} | 📊 Google Sheets: {'✅' if load_sheet() else '❌'}
+🛡️ Buffer: {buffer_pct}% | Confirmation: {confirmation_candles} candles  
+🚀 Trailing Stop: {'Active' if use_trailing else 'Inactive'}
 """)
