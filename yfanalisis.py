@@ -118,7 +118,7 @@ def load_sheet():
             scope
         )
         client = gspread.authorize(creds)
-        return client.open("CryptoDashboard").sheet1
+        return client.open("CryptoWatchlist").sheet1
     except Exception as e:
         st.error(f"❌ Gagal konek ke Google Sheets: {e}")
         return None
