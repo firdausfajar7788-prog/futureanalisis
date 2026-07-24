@@ -4,10 +4,12 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
-import json
-import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime, timedelta
+import json
+import os
 
 # =========================================================
 # PAGE CONFIG
@@ -57,18 +59,6 @@ st.markdown("""
         transform: scale(1.03);
         box-shadow: 0 0 30px rgba(0,255,136,0.3);
     }
-    .position-card {
-        background: linear-gradient(145deg, #111827, #0b1220);
-        border: 1px solid #1e293b;
-        border-radius: 16px;
-        padding: 16px;
-        margin: 8px 0;
-        transition: all 0.3s ease;
-    }
-    .position-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0,255,255,0.1);
-    }
     .pending-signal {
         background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
         border: 1px solid #ffaa00;
@@ -83,6 +73,18 @@ st.markdown("""
         0% { opacity: 1; }
         50% { opacity: 0.5; }
         100% { opacity: 1; }
+    }
+    .position-card {
+        background: linear-gradient(145deg, #111827, #0b1220);
+        border: 1px solid #1e293b;
+        border-radius: 16px;
+        padding: 16px;
+        margin: 8px 0;
+        transition: all 0.3s ease;
+    }
+    .position-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 30px rgba(0,255,255,0.1);
     }
     .stTabs [data-baseweb="tab-list"] { gap: 8px; }
     .stTabs [data-baseweb="tab"] {
@@ -101,18 +103,222 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
+# GOOGLE SHEETS CONNECTION
+# =========================================================
+@st.cache_resource
+def load_sheet():
+    """Load Google Sheets connection dengan Service Account"""
+    try:
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            dict(st.secrets["gcp_service_account"]),
+            scope
+        )
+        client = gspread.authorize(creds)
+        return client.open("CryptoDashboard").sheet1
+    except Exception as e:
+        st.error(f"❌ Gagal konek ke Google Sheets: {e}")
+        return None
+
+def get_worksheet(name):
+    """Ambil worksheet tertentu, buat jika belum ada"""
+    try:
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(
+            dict(st.secrets["gcp_service_account"]),
+            scope
+        )
+        client = gspread.authorize(creds)
+        spreadsheet = client.open("CryptoDashboard")
+        try:
+            return spreadsheet.worksheet(name)
+        except:
+            return spreadsheet.add_worksheet(title=name, rows="1000", cols="20")
+    except Exception as e:
+        return None
+
+# =========================================================
+# FUNGSI TELEGRAM
+# =========================================================
+def send_telegram(message):
+    try:
+        BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU")
+        CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "999556266")
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
+    except:
+        pass
+
+# =========================================================
+# FUNGSI MANAJEMEN WATCHLIST
+# =========================================================
+def get_watchlist():
+    """Ambil watchlist dari Google Sheets"""
+    sheet = load_sheet()
+    if sheet:
+        try:
+            all_values = sheet.get_all_values()
+            if all_values:
+                start_row = 1 if all_values[0][0].upper() == "SYMBOL" else 0
+                symbols = [row[0].strip().upper() for row in all_values[start_row:] if row and row[0].strip()]
+                if symbols:
+                    return symbols
+        except:
+            pass
+    return ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK", "MATIC", "UNI"]
+
+def add_coin_to_watchlist(coin):
+    sheet = load_sheet()
+    if sheet:
+        try:
+            sheet.append_row([coin.upper().strip()])
+            return True
+        except:
+            return False
+    return False
+
+def remove_coin_from_watchlist(coin):
+    sheet = load_sheet()
+    if sheet:
+        try:
+            cell = sheet.find(coin.upper().strip())
+            if cell:
+                sheet.delete_rows(cell.row)
+                return True
+        except:
+            return False
+    return False
+
+# =========================================================
+# FUNGSI MANAJEMEN POSISI
+# =========================================================
+def get_positions_sheet():
+    return get_worksheet("Positions")
+
+def load_positions_from_sheets():
+    """Load positions dari Google Sheets"""
+    sheet = get_positions_sheet()
+    if sheet:
+        try:
+            all_values = sheet.get_all_values()
+            if len(all_values) > 1:
+                positions = []
+                for row in all_values[1:]:
+                    if row and row[0].strip():
+                        positions.append({
+                            "symbol": row[0].strip().upper(),
+                            "entry_price": float(row[1]) if row[1] and row[1].strip() else 0,
+                            "quantity": float(row[2]) if row[2] and row[2].strip() else 0,
+                            "entry_date": row[3] if len(row) > 3 else "",
+                            "signal": row[4] if len(row) > 4 else "",
+                            "sl": float(row[5]) if len(row) > 5 and row[5] and row[5].strip() else 0,
+                            "tp": float(row[6]) if len(row) > 6 and row[6] and row[6].strip() else 0,
+                            "created_at": row[7] if len(row) > 7 else ""
+                        })
+                return positions
+        except Exception as e:
+            st.error(f"Error load positions: {e}")
+    return []
+
+def save_positions_to_sheets(positions):
+    """Save positions ke Google Sheets"""
+    sheet = get_positions_sheet()
+    if sheet:
+        try:
+            sheet.clear()
+            headers = ["Symbol", "Entry Price", "Quantity", "Entry Date", "Signal", "SL", "TP", "Created At"]
+            sheet.append_row(headers)
+            for pos in positions:
+                row = [
+                    pos.get("symbol", ""),
+                    pos.get("entry_price", 0),
+                    pos.get("quantity", 0),
+                    pos.get("entry_date", ""),
+                    pos.get("signal", ""),
+                    pos.get("sl", 0),
+                    pos.get("tp", 0),
+                    pos.get("created_at", "")
+                ]
+                sheet.append_row(row)
+            return True
+        except Exception as e:
+            st.error(f"Error save positions: {e}")
+            return False
+    return False
+
+# =========================================================
+# FUNGSI MANAJEMEN PENDING SIGNALS
+# =========================================================
+def get_pending_sheet():
+    return get_worksheet("PendingSignals")
+
+def load_pending_from_sheets():
+    """Load pending signals dari Google Sheets"""
+    sheet = get_pending_sheet()
+    if sheet:
+        try:
+            all_values = sheet.get_all_values()
+            if len(all_values) > 1:
+                pending = {}
+                for row in all_values[1:]:
+                    if row and row[0].strip():
+                        symbol = row[0].strip().upper()
+                        pending[symbol] = {
+                            "signal": row[1] if len(row) > 1 else "",
+                            "time": row[2] if len(row) > 2 else "",
+                            "entry": float(row[3]) if len(row) > 3 and row[3] and row[3].strip() else 0,
+                            "sl": float(row[4]) if len(row) > 4 and row[4] and row[4].strip() else 0,
+                            "tp": float(row[5]) if len(row) > 5 and row[5] and row[5].strip() else 0,
+                            "taken": row[6].lower() == "true" if len(row) > 6 else False
+                        }
+                return pending
+        except:
+            pass
+    return {}
+
+def save_pending_to_sheets(pending):
+    """Save pending signals ke Google Sheets"""
+    sheet = get_pending_sheet()
+    if sheet:
+        try:
+            sheet.clear()
+            headers = ["Symbol", "Signal", "Time", "Entry", "SL", "TP", "Taken"]
+            sheet.append_row(headers)
+            for symbol, data in pending.items():
+                row = [
+                    symbol,
+                    data.get("signal", ""),
+                    data.get("time", ""),
+                    data.get("entry", 0),
+                    data.get("sl", 0),
+                    data.get("tp", 0),
+                    str(data.get("taken", False))
+                ]
+                sheet.append_row(row)
+            return True
+        except:
+            return False
+    return False
+
+# =========================================================
 # SESSION STATE
 # =========================================================
+if "watchlist" not in st.session_state:
+    st.session_state.watchlist = get_watchlist()
 if "positions" not in st.session_state:
-    st.session_state.positions = []
+    st.session_state.positions = load_positions_from_sheets()
 if "pending_signal" not in st.session_state:
-    st.session_state.pending_signal = {}
+    st.session_state.pending_signal = load_pending_from_sheets()
 if "last_alert" not in st.session_state:
     st.session_state.last_alert = {}
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = []
-if "watchlist" not in st.session_state:
-    st.session_state.watchlist = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE"]
 if "selected_coin" not in st.session_state:
     st.session_state.selected_coin = "BTC"
 if "performance_stats" not in st.session_state:
@@ -123,62 +329,10 @@ if "prev_data" not in st.session_state:
     st.session_state.prev_data = {}
 
 # =========================================================
-# FUNGSI SIMPAN & LOAD POSISI (JSON)
+# TITLE
 # =========================================================
-POSITION_FILE = "positions.json"
-
-def load_positions():
-    try:
-        if os.path.exists(POSITION_FILE):
-            with open(POSITION_FILE, 'r') as f:
-                return json.load(f)
-    except:
-        pass
-    return []
-
-def save_positions(positions):
-    try:
-        with open(POSITION_FILE, 'w') as f:
-            json.dump(positions, f, indent=2, default=str)
-        return True
-    except:
-        return False
-
-def save_pending_signals(pending):
-    try:
-        with open("pending_signals.json", 'w') as f:
-            json.dump(pending, f, indent=2, default=str)
-    except:
-        pass
-
-def load_pending_signals():
-    try:
-        if os.path.exists("pending_signals.json"):
-            with open("pending_signals.json", 'r') as f:
-                return json.load(f)
-    except:
-        pass
-    return {}
-
-# Load data
-if not st.session_state.positions:
-    st.session_state.positions = load_positions()
-if not st.session_state.pending_signal:
-    loaded = load_pending_signals()
-    if loaded:
-        st.session_state.pending_signal = loaded
-
-# =========================================================
-# TELEGRAM FUNCTIONS
-# =========================================================
-def send_telegram(message):
-    try:
-        BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU")
-        CHAT_ID = st.secrets.get("TELEGRAM_CHAT_ID", "999556266")
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, json={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except:
-        pass
+st.title("🚀 Crypto Dashboard All-in-One")
+st.caption(f"🕐 Last Update: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
 
 # =========================================================
 # USD TO IDR
@@ -194,7 +348,29 @@ def get_usd_idr():
         return 16000
 
 # =========================================================
-# GET DATA - MULTI TIMEFRAME
+# FORMAT PRICE
+# =========================================================
+def format_price(value):
+    if pd.isna(value) or value is None:
+        return "-"
+    if value >= 1000:
+        return f"$ {value:,.2f}"
+    elif value >= 100:
+        return f"$ {value:,.3f}"
+    elif value >= 1:
+        return f"$ {value:,.4f}"
+    elif value >= 0.01:
+        return f"$ {value:,.6f}"
+    else:
+        return f"$ {value:,.8f}"
+
+def format_percentage(value):
+    if pd.isna(value) or value is None:
+        return "-"
+    return f"{value:.1f}%"
+
+# =========================================================
+# GET DATA - MULTI TIMEFRAME (SAMA SEPERTI KODE SEBELUMNYA)
 # =========================================================
 @st.cache_data(ttl=30)
 def get_data(symbol, interval, period):
@@ -347,28 +523,6 @@ def calculate_risk_management_advanced(df_5m, entry_signal, entry_price, rr_sl=3
         if abs(stop_loss - entry_price) / entry_price < 0.01:
             stop_loss = entry_price * 0.99 if entry_signal and "BUY" in entry_signal else entry_price * 1.01
     return stop_loss, take_profit, atr_value
-
-# =========================================================
-# FORMAT PRICE
-# =========================================================
-def format_price(value):
-    if pd.isna(value) or value is None:
-        return "-"
-    if value >= 1000:
-        return f"$ {value:,.2f}"
-    elif value >= 100:
-        return f"$ {value:,.3f}"
-    elif value >= 1:
-        return f"$ {value:,.4f}"
-    elif value >= 0.01:
-        return f"$ {value:,.6f}"
-    else:
-        return f"$ {value:,.8f}"
-
-def format_percentage(value):
-    if pd.isna(value) or value is None:
-        return "-"
-    return f"{value:.1f}%"
 
 # =========================================================
 # ANALISIS MULTI TIMEFRAME
@@ -602,10 +756,9 @@ def create_chart(result, symbol, currency_rate):
     return fig
 
 # =========================================================
-# FUNGSI AMBIL POSISI AKTIF DARI SCANNER (YANG SUDAH DIAMBIL)
+# FUNGSI GET POSITION STATUS
 # =========================================================
 def get_position_status(symbol):
-    """Cek apakah symbol sudah punya posisi aktif"""
     for pos in st.session_state.positions:
         if pos["symbol"] == symbol:
             return pos
@@ -623,7 +776,6 @@ with st.sidebar:
     
     st.divider()
     
-    # === RISK MANAGEMENT SETTINGS ===
     st.subheader("🎯 Risk Management (RR 3:7)")
     rr_sl = st.slider("Stop Loss (ATR)", 1.0, 5.0, 3.0, 0.5)
     rr_tp = st.slider("Take Profit (ATR)", 3.0, 12.0, 7.0, 0.5)
@@ -639,9 +791,46 @@ with st.sidebar:
     
     st.divider()
     
+    st.subheader("📋 Watchlist")
+    sheet_status = load_sheet()
+    if sheet_status:
+        st.success("✅ Google Sheets Connected")
+    else:
+        st.error("❌ Google Sheets Error")
+    
+    col_add1, col_add2 = st.columns([3, 1])
+    with col_add1:
+        new_coin = st.text_input("Add Coin", placeholder="PEPE", label_visibility="collapsed")
+    with col_add2:
+        if st.button("➕", use_container_width=True):
+            if new_coin:
+                coin = new_coin.upper().strip()
+                if coin not in st.session_state.watchlist:
+                    if add_coin_to_watchlist(coin):
+                        st.session_state.watchlist.append(coin)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal tambah coin!")
+                else:
+                    st.warning(f"⚠️ {coin} already exists!")
+    
+    st.markdown("**Your Coins:**")
+    cols = st.columns(3)
+    for idx, coin in enumerate(st.session_state.watchlist):
+        col_idx = idx % 3
+        with cols[col_idx]:
+            if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
+                if remove_coin_from_watchlist(coin):
+                    st.session_state.watchlist.remove(coin)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Gagal hapus {coin}!")
+    
+    st.divider()
+    
     st.subheader("📱 Telegram Alert")
     if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram("🚀 Dashboard Aktif!")
+        send_telegram("🚀 Dashboard Aktif! Google Sheets + Telegram Connected.")
         st.success("✅ Pesan test terkirim!")
     
     st.divider()
@@ -658,13 +847,7 @@ with st.sidebar:
 st_autorefresh(interval=refresh * 1000, key="refresh")
 
 # =========================================================
-# MAIN TITLE
-# =========================================================
-st.title("🚀 Crypto Dashboard All-in-One")
-st.caption(f"🕐 Last Update: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
-
-# =========================================================
-# GET USD/IDR
+# MAIN - CALCULATE CURRENCY
 # =========================================================
 usd_to_idr = get_usd_idr()
 currency_rate = usd_to_idr if currency == "IDR" else 1
@@ -682,12 +865,15 @@ with tab1:
     current_time = datetime.now()
     expired_signals = []
     for symbol, data in st.session_state.pending_signal.items():
-        elapsed = (current_time - data["time"]).seconds / 60
+        try:
+            elapsed = (current_time - datetime.fromisoformat(data["time"])).seconds / 60
+        except:
+            elapsed = 999
         if elapsed > hold_minutes:
             expired_signals.append(symbol)
     for symbol in expired_signals:
         del st.session_state.pending_signal[symbol]
-        save_pending_signals(st.session_state.pending_signal)
+        save_pending_to_sheets(st.session_state.pending_signal)
     
     # --- SIGNAL SUMMARY ---
     st.subheader("📊 Signal Summary")
@@ -696,7 +882,7 @@ with tab1:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    watchlist = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOGE", "AVAX", "LINK", "MATIC", "UNI"]
+    watchlist = st.session_state.watchlist
     
     for idx, symbol in enumerate(watchlist):
         progress_bar.progress((idx + 1) / len(watchlist))
@@ -705,7 +891,6 @@ with tab1:
         result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
         
         if result:
-            # Cek apakah ada pending signal
             pending = st.session_state.pending_signal.get(symbol)
             if pending:
                 entry_display = pending["signal"]
@@ -716,23 +901,20 @@ with tab1:
                 is_pending = False
                 is_taken = False
             
-            # Cek apakah sudah punya posisi
             existing_pos = get_position_status(symbol)
             has_position = existing_pos is not None
             
-            # Simpan signal baru ke pending jika ada
             if result["entry_signal"] and symbol not in st.session_state.pending_signal:
                 st.session_state.pending_signal[symbol] = {
                     "signal": result["entry_signal"],
-                    "time": datetime.now(),
+                    "time": datetime.now().isoformat(),
                     "entry": result["entry_price"],
                     "sl": result["stop_loss"],
                     "tp": result["take_profit"],
                     "taken": False
                 }
-                save_pending_signals(st.session_state.pending_signal)
+                save_pending_to_sheets(st.session_state.pending_signal)
                 
-                # Kirim Telegram
                 if result["entry_signal"]:
                     rr_ratio = ((result["take_profit"] / result["entry_price"] - 1) / 
                                (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
@@ -747,15 +929,14 @@ BB Score : {result['bb_score']}
 Confirmations : {result['confirmations']}/3
 
 Entry : ${result['entry_price']:.4f}
-SL : ${result['stop_loss']:.4f} ({format_percentage((result['stop_loss']/result['entry_price'] - 1)*100)})
-TP : ${result['take_profit']:.4f} ({format_percentage((result['take_profit']/result['entry_price'] - 1)*100)})
+SL : ${result['stop_loss']:.4f}
+TP : ${result['take_profit']:.4f}
 RR Ratio : {rr_ratio:.2f}
 
 Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                     send_telegram(message)
                     st.session_state.performance_stats["total_signals"] += 1
             
-            # Tampilkan di tabel
             all_signals.append({
                 "Coin": symbol,
                 "Trend 1H": result["trend_1h"],
@@ -793,11 +974,12 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
         for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
             col_idx = idx % len(cols)
             with cols[col_idx]:
-                elapsed = (datetime.now() - data["time"]).seconds / 60
+                try:
+                    elapsed = (datetime.now() - datetime.fromisoformat(data["time"])).seconds / 60
+                except:
+                    elapsed = 0
                 remaining = max(0, hold_minutes - elapsed)
                 rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
-                
-                # Cek apakah sudah diambil
                 is_taken = data.get("taken", False)
                 taken_text = "✅ TAKEN" if is_taken else "⏳ Available"
                 
@@ -813,14 +995,12 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Tombol "Take This Trade" jika belum diambil
                 if not is_taken and remaining > 0:
                     if st.button(f"✅ Take {symbol}", key=f"take_{symbol}"):
-                        # Tambahkan ke positions
                         new_position = {
                             "symbol": symbol,
                             "entry_price": data["entry"],
-                            "quantity": 0.01,  # Default quantity
+                            "quantity": 0.01,
                             "entry_date": datetime.now().strftime("%Y-%m-%d"),
                             "signal": data["signal"],
                             "sl": data["sl"],
@@ -828,15 +1008,12 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                             "created_at": datetime.now().isoformat()
                         }
                         st.session_state.positions.append(new_position)
-                        save_positions(st.session_state.positions)
+                        save_positions_to_sheets(st.session_state.positions)
                         
-                        # Tandai sebagai taken
                         st.session_state.pending_signal[symbol]["taken"] = True
-                        save_pending_signals(st.session_state.pending_signal)
+                        save_pending_to_sheets(st.session_state.pending_signal)
                         
-                        # Kirim Telegram
                         send_telegram(f"✅ POSITION TAKEN: {symbol} at ${data['entry']:.4f}")
-                        
                         st.success(f"✅ {symbol} position added!")
                         st.rerun()
     
@@ -885,9 +1062,9 @@ Time : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"""
                     "created_at": datetime.now().isoformat()
                 }
                 st.session_state.positions.append(new_position)
-                save_positions(st.session_state.positions)
+                save_positions_to_sheets(st.session_state.positions)
                 st.session_state.pending_signal[selected_coin]["taken"] = True
-                save_pending_signals(st.session_state.pending_signal)
+                save_pending_to_sheets(st.session_state.pending_signal)
                 send_telegram(f"✅ POSITION TAKEN: {selected_coin} at ${pending['entry']:.4f}")
                 st.success(f"✅ {selected_coin} position added!")
                 st.rerun()
@@ -945,7 +1122,6 @@ with tab2:
             entry_date = pos.get("entry_date", "N/A")
             signal = pos.get("signal", "Unknown")
             
-            # Get current price
             df = get_data(symbol, "1h", "1d")
             if df is not None and not df.empty:
                 current_price = df["Close"].iloc[-1]
@@ -976,7 +1152,6 @@ with tab2:
                         if st.button(f"📈 Chart", key=f"chart_pos_{idx}"):
                             st.session_state[f"show_chart_pos_{idx}"] = not st.session_state.get(f"show_chart_pos_{idx}", False)
                         if st.button(f"❌ Close", key=f"close_pos_{idx}"):
-                            # Log close
                             st.session_state.signal_history.append({
                                 "symbol": symbol,
                                 "entry_price": entry_price,
@@ -985,7 +1160,6 @@ with tab2:
                                 "pnl": pnl,
                                 "exit_date": datetime.now().isoformat()
                             })
-                            # Update performance
                             if pnl > 0:
                                 st.session_state.performance_stats["wins"] += 1
                             else:
@@ -993,11 +1167,10 @@ with tab2:
                             st.session_state.performance_stats["total_profit"] += pnl
                             
                             del st.session_state.positions[idx]
-                            save_positions(st.session_state.positions)
+                            save_positions_to_sheets(st.session_state.positions)
                             st.rerun()
                         
                         if st.session_state.get(f"show_chart_pos_{idx}", False):
-                            # Simple chart untuk posisi
                             st.caption("📊 Price Chart")
                             fig = make_subplots(rows=1, cols=1)
                             fig.add_trace(go.Scatter(
@@ -1035,7 +1208,8 @@ st.divider()
 st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
 💱 Currency: {currency} | 🔄 Auto Refresh: {refresh} detik  
-📊 Total Coins: {len(watchlist)} | 📈 Positions: {len(st.session_state.positions)}
+📊 Total Coins: {len(st.session_state.watchlist)} | 📈 Positions: {len(st.session_state.positions)}  
 🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
-🚀 Trailing Stop: {'Active' if use_trailing else 'Inactive'}
+🚀 Trailing Stop: {'Active' if use_trailing else 'Inactive'}  
+📱 Telegram: {'✅' if st.secrets.get('TELEGRAM_BOT_TOKEN') else '❌'} | 📊 Google Sheets: {'✅' if load_sheet() else '❌'}
 """)
