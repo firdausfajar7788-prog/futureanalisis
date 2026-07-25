@@ -1,0 +1,6 @@
+# Jangan commit file rahasia & database lokal
+.streamlit/secrets.toml
+crypto_bot.db
+__pycache__/
+*.pyc
+.env
