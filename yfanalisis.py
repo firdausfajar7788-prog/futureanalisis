@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖 AI Crypto Scanner PRO - SQLite",
+    page_title="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -1400,7 +1400,7 @@ if "backtest_result" not in st.session_state:
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖 AI Crypto Scanner PRO - SQLite")
+st.title("🤖")
 st.caption("Multi Timeframe: 1H | 15M | 5M | Smart Money | AI Prediction | Auto Trading")
 
 # =========================================================
