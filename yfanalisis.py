@@ -1666,7 +1666,7 @@ with tab3:
 with tab4:
     st.subheader("📋 Trade Management")
     
-    auto_trade = st.toggle("🤖 Auto Trading", value=False)
+    auto_trade = st.toggle("🤖 Auto Trading", value=True)
     
     if auto_trade:
         st.info("🤖 Auto Trading AKTIF! Monitoring posisi...")
