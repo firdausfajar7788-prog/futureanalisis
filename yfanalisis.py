@@ -13,8 +13,8 @@ import numpy as np
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -22,13 +22,13 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖 Crypto Trading Bot PRO",
+    page_title="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # =========================================================
-# ENHANCED CSS
+# CSS KUSTOM
 # =========================================================
 st.markdown("""
 <style>
@@ -39,11 +39,10 @@ st.markdown("""
         border-radius: 16px;
         padding: 16px;
         box-shadow: 0 4px 20px rgba(0,255,255,0.05);
-        transition: all 0.3s ease;
     }
     [data-testid="stMetric"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0,255,255,0.15);
+        box-shadow: 0 8px 30px rgba(0,255,255,0.1);
     }
     .signal-buy {
         background: linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05));
@@ -53,7 +52,6 @@ st.markdown("""
         color: #00ff88;
         font-weight: 600;
         font-size: 18px;
-        animation: pulse-green 2s infinite;
     }
     .signal-sell {
         background: linear-gradient(135deg, rgba(255,59,92,0.15), rgba(255,59,92,0.05));
@@ -63,7 +61,6 @@ st.markdown("""
         color: #ff3b5c;
         font-weight: 600;
         font-size: 18px;
-        animation: pulse-red 2s infinite;
     }
     .signal-wait {
         background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
@@ -88,16 +85,6 @@ st.markdown("""
         0% { opacity: 1; }
         50% { opacity: 0.5; }
         100% { opacity: 1; }
-    }
-    @keyframes pulse-green {
-        0% { box-shadow: 0 0 0 0 rgba(0,255,136,0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(0,255,136,0); }
-        100% { box-shadow: 0 0 0 0 rgba(0,255,136,0); }
-    }
-    @keyframes pulse-red {
-        0% { box-shadow: 0 0 0 0 rgba(255,59,92,0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(255,59,92,0); }
-        100% { box-shadow: 0 0 0 0 rgba(255,59,92,0); }
     }
     .stButton > button {
         background: linear-gradient(145deg, #00ff88, #00cc66);
@@ -128,21 +115,13 @@ st.markdown("""
         color: #00ff88;
         border-bottom: 2px solid #00ff88;
     }
-    .metric-card {
-        background: linear-gradient(145deg, #1a1a2e, #16213e);
-        border-radius: 12px;
-        padding: 16px;
-        border: 1px solid #2a2a4a;
-    }
-    .profit-positive { color: #00ff88; }
-    .profit-negative { color: #ff3b5c; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# DATABASE
+# DATABASE SQLITE
 # =========================================================
-DB_PATH = "crypto_bot_pro.db"
+DB_PATH = "crypto_bot.db"
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -153,6 +132,7 @@ def init_db():
     conn = get_db()
     cursor = conn.cursor()
     
+    # Tabel watchlist
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS watchlist (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -161,6 +141,7 @@ def init_db():
         )
     ''')
     
+    # Tabel coins
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS coins (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -168,12 +149,12 @@ def init_db():
             name TEXT,
             category TEXT,
             active INTEGER DEFAULT 1,
-            volatility_score REAL DEFAULT 0.5,
             created_at TIMESTAMP,
             updated_at TIMESTAMP
         )
     ''')
     
+    # Tabel signal_history
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS signal_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,13 +169,11 @@ def init_db():
             confidence REAL,
             ai_signal TEXT,
             smart_money_score REAL,
-            adx_value REAL,
-            volatility_pct REAL,
-            volume_ratio REAL,
             timestamp TIMESTAMP
         )
     ''')
     
+    # Tabel trades
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -214,14 +193,11 @@ def init_db():
             entry_time TIMESTAMP,
             exit_time TIMESTAMP,
             smart_money_score REAL,
-            ai_score REAL,
-            max_profit REAL,
-            min_profit REAL,
-            holding_period INTEGER,
-            rr_ratio REAL
+            ai_score REAL
         )
     ''')
     
+    # Tabel performance
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS performance (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -231,6 +207,7 @@ def init_db():
         )
     ''')
     
+    # Tabel daily_stats - FIX: AUTOINCREMENT (bukan AUTOINLINE!)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS daily_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -239,12 +216,11 @@ def init_db():
             wins INTEGER,
             losses INTEGER,
             profit REAL,
-            win_rate REAL,
-            avg_holding_period REAL,
-            max_drawdown REAL
+            win_rate REAL
         )
     ''')
     
+    # Tabel ml_predictions
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS ml_predictions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -254,69 +230,366 @@ def init_db():
             buy_prob REAL,
             sell_prob REAL,
             hold_prob REAL,
-            model_version TEXT,
             timestamp TIMESTAMP
         )
     ''')
     
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS pair_performance (
-            symbol TEXT PRIMARY KEY,
-            total_trades INTEGER DEFAULT 0,
-            win_rate REAL DEFAULT 0,
-            total_profit REAL DEFAULT 0,
-            avg_profit REAL DEFAULT 0,
-            max_profit REAL DEFAULT 0,
-            max_loss REAL DEFAULT 0,
-            last_updated TIMESTAMP
-        )
-    ''')
+    conn.commit()
+    conn.close()
+
+def migrate_db():
+    """Migrasi database untuk menambahkan kolom yang hilang"""
+    conn = get_db()
+    cursor = conn.cursor()
     
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signal_history(symbol)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_signals_time ON signal_history(timestamp)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time)")
+    # Cek apakah kolom smart_money_score ada di tabel trades
+    cursor.execute("PRAGMA table_info(trades)")
+    columns = [col[1] for col in cursor.fetchall()]
+    
+    if 'smart_money_score' not in columns:
+        cursor.execute("ALTER TABLE trades ADD COLUMN smart_money_score REAL")
+        print("✅ Added smart_money_score to trades")
+    
+    if 'ai_score' not in columns:
+        cursor.execute("ALTER TABLE trades ADD COLUMN ai_score REAL")
+        print("✅ Added ai_score to trades")
+    
+    if 'exit_price' not in columns:
+        cursor.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
+        print("✅ Added exit_price to trades")
     
     conn.commit()
     conn.close()
 
-init_db()
+# ==================== WATCHLIST ====================
+def get_watchlist():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT symbol FROM watchlist ORDER BY added_at")
+    rows = cursor.fetchall()
+    conn.close()
+    return [row['symbol'] for row in rows] if rows else ["BTC"]
 
-# =========================================================
-# DATA MANAGER
-# =========================================================
-class DataManager:
-    def __init__(self):
-        self.cache = {}
+def add_coin(symbol):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO watchlist (symbol, added_at) VALUES (?, ?)",
+            (symbol.upper(), datetime.now())
+        )
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+def remove_coin(symbol):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
+def sync_watchlist_from_coins():
+    """Sinkronisasi dari tabel coins ke watchlist"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT symbol FROM coins WHERE active = 1")
+    rows = cursor.fetchall()
+    conn.close()
     
-    def get_data(self, symbol, interval, period):
-        cache_key = f"{symbol}_{interval}_{period}"
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-        
-        try:
-            ticker = f"{symbol}-USD"
-            df = yf.download(ticker, interval=interval, period=period, progress=False, timeout=15)
-            if df.empty:
-                ticker = symbol
-                df = yf.download(ticker, interval=interval, period=period, progress=False, timeout=15)
-            if df.empty:
-                return None
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            df = df.reset_index()
-            df.rename(columns={df.columns[0]: "Time"}, inplace=True)
-            df["Time"] = pd.to_datetime(df["Time"])
-            self.cache[cache_key] = df
-            return df
-        except Exception as e:
-            return None
+    for row in rows:
+        add_coin(row['symbol'])
+    return len(rows)
 
-data_manager = DataManager()
+# ==================== COINS CRUD ====================
+def create_coin(symbol, name=None, category=None, active=True):
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+            INSERT INTO coins (symbol, name, category, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (symbol.upper(), name or symbol.upper(), category or "Crypto", 1 if active else 0, datetime.now(), datetime.now()))
+        conn.commit()
+        conn.close()
+        return True, f"✅ {symbol.upper()} berhasil ditambahkan!"
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False, f"⚠️ {symbol.upper()} sudah ada!"
+
+def get_all_coins(active_only=False):
+    conn = get_db()
+    cursor = conn.cursor()
+    if active_only:
+        cursor.execute("SELECT * FROM coins WHERE active = 1 ORDER BY symbol")
+    else:
+        cursor.execute("SELECT * FROM coins ORDER BY symbol")
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def update_coin(symbol, updates):
+    conn = get_db()
+    cursor = conn.cursor()
+    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+    values = list(updates.values()) + [datetime.now(), symbol.upper()]
+    try:
+        cursor.execute(f"UPDATE coins SET {set_clause}, updated_at = ? WHERE symbol = ?", values)
+        conn.commit()
+        conn.close()
+        return True, f"✅ {symbol.upper()} berhasil diupdate!"
+    except Exception as e:
+        conn.close()
+        return False, f"❌ Gagal: {e}"
+
+def delete_coin(symbol):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM coins WHERE symbol = ?", (symbol.upper(),))
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0, f"🗑️ {symbol.upper()} berhasil dihapus!"
+
+# ==================== SIGNAL HISTORY ====================
+def save_signal(signal_data):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO signal_history (
+            symbol, signal, entry_price, stop_loss, take_profit,
+            trend_1h, trend_15m, score, confidence, ai_signal, smart_money_score, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        signal_data.get('symbol'),
+        signal_data.get('signal'),
+        signal_data.get('entry_price'),
+        signal_data.get('stop_loss'),
+        signal_data.get('take_profit'),
+        signal_data.get('trend_1h'),
+        signal_data.get('trend_15m'),
+        signal_data.get('score', 0),
+        signal_data.get('confidence', 0),
+        signal_data.get('ai_signal'),
+        signal_data.get('smart_money_score', 0),
+        datetime.now()
+    ))
+    conn.commit()
+    conn.close()
+    return True
+
+def get_signal_history(limit=100):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM signal_history ORDER BY timestamp DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+# ==================== TRADES ====================
+def save_trade(trade_data):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO trades (
+            symbol, type, entry_price, stop_loss, take_profit,
+            position_size, leverage, score, confidence, signal,
+            status, entry_time, smart_money_score, ai_score
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        trade_data.get('symbol'),
+        trade_data.get('type'),
+        trade_data.get('entry_price'),
+        trade_data.get('stop_loss'),
+        trade_data.get('take_profit'),
+        trade_data.get('position_size', 100),
+        trade_data.get('leverage', 10),
+        trade_data.get('score', 0),
+        trade_data.get('confidence', 0),
+        trade_data.get('signal'),
+        trade_data.get('status', 'OPEN'),
+        trade_data.get('entry_time', datetime.now()),
+        trade_data.get('smart_money_score', 0),
+        trade_data.get('ai_score', 0)
+    ))
+    conn.commit()
+    conn.close()
+    return True
+
+def get_trades(limit=100):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def update_trade(trade_id, updates):
+    conn = get_db()
+    cursor = conn.cursor()
+    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
+    values = list(updates.values()) + [trade_id]
+    cursor.execute(f"UPDATE trades SET {set_clause} WHERE id = ?", values)
+    conn.commit()
+    conn.close()
+    return True
+
+# ==================== PERFORMANCE ====================
+def update_performance(stats):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO performance (key, value, updated_at) VALUES (?, ?, ?)",
+        ("performance_stats", json.dumps(stats), datetime.now())
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+def get_performance():
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM performance WHERE key = 'performance_stats'")
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return json.loads(row['value'])
+    return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+
+# ==================== DAILY STATS ====================
+def save_daily_stats(stats):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT OR REPLACE INTO daily_stats (date, total_signals, wins, losses, profit, win_rate) VALUES (?, ?, ?, ?, ?, ?)",
+        (stats['date'], stats['total_signals'], stats['wins'], stats['losses'], stats['profit'], stats['win_rate'])
+    )
+    conn.commit()
+    conn.close()
+
+# ==================== ML PREDICTIONS ====================
+def save_prediction(pred_data):
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO ml_predictions (symbol, prediction, confidence, buy_prob, sell_prob, hold_prob, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (
+        pred_data.get('symbol'),
+        pred_data.get('prediction'),
+        pred_data.get('confidence'),
+        pred_data.get('buy_prob', 0),
+        pred_data.get('sell_prob', 0),
+        pred_data.get('hold_prob', 0),
+        datetime.now()
+    ))
+    conn.commit()
+    conn.close()
+
+def get_predictions(symbol=None, limit=50):
+    conn = get_db()
+    cursor = conn.cursor()
+    if symbol:
+        cursor.execute("SELECT * FROM ml_predictions WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?", (symbol, limit))
+    else:
+        cursor.execute("SELECT * FROM ml_predictions ORDER BY timestamp DESC LIMIT ?", (limit,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 # =========================================================
-# INDICATORS
+# TELEGRAM FUNCTIONS
+# =========================================================
+def send_telegram(message):
+    try:
+        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+        if bot_token and chat_id:
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+    except:
+        pass
+
+# =========================================================
+# USD TO IDR
+# =========================================================
+@st.cache_data(ttl=3600)
+def get_usd_idr():
+    try:
+        url = "https://open.er-api.com/v6/latest/USD"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        return data["rates"]["IDR"]
+    except:
+        return 16000
+
+# =========================================================
+# FORMAT PRICE
+# =========================================================
+def format_price(value):
+    if pd.isna(value) or value is None:
+        return "-"
+    if value >= 1000:
+        return f"$ {value:,.2f}"
+    elif value >= 100:
+        return f"$ {value:,.3f}"
+    elif value >= 1:
+        return f"$ {value:,.4f}"
+    elif value >= 0.01:
+        return f"$ {value:,.6f}"
+    else:
+        return f"$ {value:,.8f}"
+
+def format_percentage(value):
+    if pd.isna(value) or value is None:
+        return "-"
+    return f"{value:.1f}%"
+
+# =========================================================
+# GET DATA
+# =========================================================
+@st.cache_data(ttl=30)
+def get_data(symbol, interval, period):
+    try:
+        ticker = f"{symbol}-USD"
+        df = yf.download(ticker, interval=interval, period=period, progress=False)
+        if df.empty:
+            ticker = symbol
+            df = yf.download(ticker, interval=interval, period=period, progress=False)
+        if df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        df = df.reset_index()
+        df.rename(columns={df.columns[0]: "Time"}, inplace=True)
+        df["Time"] = pd.to_datetime(df["Time"])
+        return df
+    except:
+        return None
+
+def get_data_safe(symbol, interval, min_candles=20):
+    periods = {
+        "1m": ["1d", "5d", "7d"],
+        "5m": ["2d", "5d", "7d", "14d"],
+        "15m": ["5d", "7d", "14d", "30d"],
+        "30m": ["7d", "14d", "30d"],
+        "1h": ["7d", "14d", "30d", "60d"],
+        "4h": ["14d", "30d", "60d"],
+        "1d": ["30d", "60d", "90d", "1y"],
+    }
+    for period in periods.get(interval, ["7d", "14d", "30d"]):
+        df = get_data(symbol, interval, period)
+        if df is not None and len(df) >= min_candles:
+            return df
+    return None
+
+# =========================================================
+# INDIKATOR TEKNIKAL
 # =========================================================
 def EMA(df, period=20):
     return df["Close"].ewm(span=period, adjust=False).mean()
@@ -378,837 +651,430 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     return k, d
 
 # =========================================================
-# ENHANCED SMART MONEY
+# SMART MONEY CONCEPTS
 # =========================================================
-def enhanced_smart_money_analysis(df, lookback=30):
-    """Smart Money Concepts analysis"""
-    
-    def find_order_blocks(df, lookback):
-        blocks = []
-        for i in range(lookback, len(df)-1):
-            if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
-                high = df['High'].iloc[i-1]
-                low = df['Low'].iloc[i-1]
-                if df['High'].iloc[i] > high:
-                    blocks.append({
-                        'type': 'BULLISH',
-                        'high': float(high),
-                        'low': float(low),
-                        'strength': df['Volume'].iloc[i] / df['Volume'].iloc[i-1] if df['Volume'].iloc[i-1] > 0 else 1
-                    })
-            elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
-                high = df['High'].iloc[i-1]
-                low = df['Low'].iloc[i-1]
-                if df['Low'].iloc[i] < low:
-                    blocks.append({
-                        'type': 'BEARISH',
-                        'high': float(high),
-                        'low': float(low),
-                        'strength': df['Volume'].iloc[i] / df['Volume'].iloc[i-1] if df['Volume'].iloc[i-1] > 0 else 1
-                    })
-        return blocks[-5:]
-    
-    def find_fair_value_gaps(df, lookback):
-        fvgs = []
-        for i in range(2, len(df)-1):
-            if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-                fvgs.append({
-                    'type': 'BULLISH',
-                    'high': float(df['Low'].iloc[i]),
-                    'low': float(df['High'].iloc[i-2]),
-                    'size': (df['Low'].iloc[i] - df['High'].iloc[i-2]) / df['High'].iloc[i-2] * 100
-                })
-            elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-                fvgs.append({
-                    'type': 'BEARISH',
-                    'high': float(df['Low'].iloc[i-2]),
-                    'low': float(df['High'].iloc[i]),
-                    'size': (df['Low'].iloc[i-2] - df['High'].iloc[i]) / df['High'].iloc[i] * 100
-                })
-        return fvgs[-5:]
-    
-    def detect_market_structure(df, lookback=10):
-        structure = {'hh': False, 'hl': False, 'lh': False, 'll': False, 'bos': False, 'choch': False, 'trend': 'NEUTRAL'}
-        if len(df) < lookback * 2:
-            return structure
-        highs = df['High'].tail(lookback).values
-        lows = df['Low'].tail(lookback).values
-        if highs[-1] > highs[-2] and highs[-2] > highs[-3]:
-            structure['hh'] = True
-        if lows[-1] > lows[-2] and lows[-2] > lows[-3]:
-            structure['hl'] = True
-        if highs[-1] < highs[-2] and highs[-2] < highs[-3]:
-            structure['lh'] = True
-        if lows[-1] < lows[-2] and lows[-2] < lows[-3]:
-            structure['ll'] = True
-        if structure['hh'] or structure['ll']:
-            structure['bos'] = True
-        if (structure['hh'] and lows[-1] > lows[-2]) or (structure['ll'] and highs[-1] < highs[-2]):
-            structure['choch'] = True
-        if structure['hh'] and structure['hl']:
-            structure['trend'] = 'BULLISH'
-        elif structure['lh'] and structure['ll']:
-            structure['trend'] = 'BEARISH'
+def find_order_blocks(df, lookback=20):
+    blocks = []
+    for i in range(lookback, len(df)-1):
+        if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
+            high = df['High'].iloc[i-1]
+            low = df['Low'].iloc[i-1]
+            if df['High'].iloc[i] > high:
+                blocks.append({'type': 'BULLISH', 'high': float(high), 'low': float(low)})
+        elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
+            high = df['High'].iloc[i-1]
+            low = df['Low'].iloc[i-1]
+            if df['Low'].iloc[i] < low:
+                blocks.append({'type': 'BEARISH', 'high': float(high), 'low': float(low)})
+    return blocks[-3:] if len(blocks) > 3 else blocks
+
+def find_fair_value_gaps(df, lookback=20):
+    fvgs = []
+    for i in range(2, len(df)-1):
+        if df['Low'].iloc[i] > df['High'].iloc[i-2]:
+            fvgs.append({'type': 'BULLISH', 'high': float(df['Low'].iloc[i]), 'low': float(df['High'].iloc[i-2])})
+        elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
+            fvgs.append({'type': 'BEARISH', 'high': float(df['Low'].iloc[i-2]), 'low': float(df['High'].iloc[i])})
+    return fvgs[-3:] if len(fvgs) > 3 else fvgs
+
+def find_liquidity_sweeps(df, lookback=20, buffer=0.01):
+    sweeps = []
+    recent_high = df['High'].tail(lookback).max()
+    recent_low = df['Low'].tail(lookback).min()
+    if df['High'].iloc[-1] > recent_high * (1 + buffer):
+        sweeps.append({'type': 'HIGH_SWEEP', 'level': float(recent_high), 'swept_at': float(df['High'].iloc[-1])})
+    if df['Low'].iloc[-1] < recent_low * (1 - buffer):
+        sweeps.append({'type': 'LOW_SWEEP', 'level': float(recent_low), 'swept_at': float(df['Low'].iloc[-1])})
+    return sweeps
+
+def detect_market_structure(df, lookback=10):
+    structure = {'hh': False, 'hl': False, 'lh': False, 'll': False, 'bos': False, 'choch': False}
+    if len(df) < lookback * 2:
         return structure
-    
-    def find_liquidity_sweeps(df, lookback=20):
-        sweeps = []
-        recent_high = df['High'].tail(lookback).max()
-        recent_low = df['Low'].tail(lookback).min()
-        buffer = 0.005
-        if df['High'].iloc[-1] > recent_high * (1 + buffer):
-            sweeps.append({'type': 'HIGH_SWEEP', 'level': float(recent_high), 'swept_at': float(df['High'].iloc[-1])})
-        if df['Low'].iloc[-1] < recent_low * (1 - buffer):
-            sweeps.append({'type': 'LOW_SWEEP', 'level': float(recent_low), 'swept_at': float(df['Low'].iloc[-1])})
-        return sweeps
-    
-    order_blocks = find_order_blocks(df, lookback)
-    fvgs = find_fair_value_gaps(df, lookback)
-    structure = detect_market_structure(df, lookback)
-    sweeps = find_liquidity_sweeps(df, lookback)
-    
+    highs = df['High'].tail(lookback).values
+    lows = df['Low'].tail(lookback).values
+    if highs[-1] > highs[-2] and highs[-2] > highs[-3]:
+        structure['hh'] = True
+    if lows[-1] > lows[-2] and lows[-2] > lows[-3]:
+        structure['hl'] = True
+    if highs[-1] < highs[-2] and highs[-2] < highs[-3]:
+        structure['lh'] = True
+    if lows[-1] < lows[-2] and lows[-2] < lows[-3]:
+        structure['ll'] = True
+    if structure['hh'] or structure['ll']:
+        structure['bos'] = True
+    if (structure['hh'] and lows[-1] > lows[-2]) or (structure['ll'] and highs[-1] < highs[-2]):
+        structure['choch'] = True
+    return structure
+
+def calculate_smart_money_score(df, lookback=20):
     score = 50
     reasons = []
-    signals = []
-    
-    if order_blocks:
-        last_block = order_blocks[-1]
-        if last_block['type'] == 'BULLISH' and last_block['strength'] > 1.2:
+    obs = find_order_blocks(df, lookback)
+    if obs:
+        if obs[-1]['type'] == 'BULLISH':
             score += 15
-            reasons.append("Strong Bullish Order Block")
-            signals.append("BUY")
-        elif last_block['type'] == 'BEARISH' and last_block['strength'] > 1.2:
+            reasons.append("Bullish Order Block")
+        else:
             score -= 15
-            reasons.append("Strong Bearish Order Block")
-            signals.append("SELL")
-    
+            reasons.append("Bearish Order Block")
+    fvgs = find_fair_value_gaps(df, lookback)
     if fvgs:
-        last_fvg = fvgs[-1]
-        if last_fvg['type'] == 'BULLISH' and last_fvg['size'] > 2:
+        if fvgs[-1]['type'] == 'BULLISH':
             score += 15
-            reasons.append("Large Bullish FVG")
-            signals.append("BUY")
-        elif last_fvg['type'] == 'BEARISH' and last_fvg['size'] > 2:
+            reasons.append("Bullish FVG")
+        else:
             score -= 15
-            reasons.append("Large Bearish FVG")
-            signals.append("SELL")
-    
-    if structure['trend'] == 'BULLISH':
-        score += 10
-        reasons.append("Bullish Structure")
-    elif structure['trend'] == 'BEARISH':
-        score -= 10
-        reasons.append("Bearish Structure")
-    
-    if structure['choch']:
-        score += 5
-        reasons.append("Change of Character")
-    
+            reasons.append("Bearish FVG")
+    sweeps = find_liquidity_sweeps(df, lookback)
     for sweep in sweeps:
         if sweep['type'] == 'HIGH_SWEEP':
             score += 10
-            reasons.append("High Liquidity Sweep")
-            signals.append("SELL")
-        elif sweep['type'] == 'LOW_SWEEP':
+            reasons.append("Liquidity Sweep Up")
+        else:
             score -= 10
-            reasons.append("Low Liquidity Sweep")
-            signals.append("BUY")
-    
-    buy_signals = signals.count("BUY")
-    sell_signals = signals.count("SELL")
-    
-    overall_signal = "BULLISH" if buy_signals > sell_signals else ("BEARISH" if sell_signals > buy_signals else "NEUTRAL")
-    
-    return {
-        'score': max(0, min(100, score)),
-        'reasons': reasons,
-        'signal': overall_signal,
-        'order_blocks': order_blocks,
-        'fvgs': fvgs,
-        'structure': structure,
-        'sweeps': sweeps
-    }
+            reasons.append("Liquidity Sweep Down")
+    structure = detect_market_structure(df, lookback)
+    if structure.get('hh') and structure.get('hl'):
+        score += 10
+        reasons.append("Bullish Structure (HH+HL)")
+    elif structure.get('lh') and structure.get('ll'):
+        score -= 10
+        reasons.append("Bearish Structure (LH+LL)")
+    if structure.get('choch'):
+        score += 5 if score >= 50 else -5
+        reasons.append("Change of Character")
+    score = max(0, min(100, score))
+    return {'score': score, 'reasons': reasons}
 
 # =========================================================
-# ENHANCED AI PREDICTOR WITH RANDOM FOREST
+# AI PREDICTOR (Simple ML)
 # =========================================================
-class EnhancedAIPredictor:
+class AIPredictor:
     def __init__(self):
         self.model = None
         self.scaler = StandardScaler()
         self.is_trained = False
-        self.feature_importance = None
-        self.model_version = "RF_v2.0"
-        self.min_training_samples = 100
-        self.accuracy_history = []
-        
+        self.features = []
+    
     def _extract_features(self, df):
-        """Extract comprehensive features"""
         features = pd.DataFrame()
-        df = df.copy()
-        
-        # 1. Price features
         features['close'] = df['Close']
-        features['open'] = df['Open']
         features['high'] = df['High']
         features['low'] = df['Low']
-        
-        # 2. Returns
-        for period in [1, 2, 3, 5, 10, 20]:
-            features[f'return_{period}'] = df['Close'].pct_change(period)
-            features[f'return_abs_{period}'] = df['Close'].pct_change(period).abs()
-        
-        # 3. Price position
-        features['price_position'] = (df['Close'] - df['Low']) / (df['High'] - df['Low'] + 1e-6)
-        features['high_low_ratio'] = df['High'] / (df['Low'] + 1e-6)
-        
-        # 4. Volume
         features['volume'] = df['Volume']
-        features['volume_ratio'] = df['Volume'] / df['Volume'].rolling(20).mean()
-        features['volume_trend'] = df['Volume'].rolling(5).mean() / df['Volume'].rolling(20).mean()
-        features['volume_volatility'] = df['Volume'].pct_change().rolling(10).std()
-        
-        # 5. Moving Averages
-        for period in [9, 20, 50, 200]:
-            ma = df['Close'].rolling(period).mean()
-            features[f'ma_{period}'] = ma
-            features[f'price_ma_{period}'] = df['Close'] / ma - 1
-        
-        # 6. RSI
-        features['rsi_14'] = RSI(df, 14)
-        features['rsi_21'] = RSI(df, 21)
-        
-        # 7. MACD
+        features['return_1'] = df['Close'].pct_change()
+        features['return_5'] = df['Close'].pct_change(5)
+        features['return_10'] = df['Close'].pct_change(10)
+        features['rsi'] = RSI(df, 14)
         macd, signal, hist = MACD(df)
         features['macd'] = macd
         features['macd_signal'] = signal
         features['macd_hist'] = hist
-        features['macd_divergence'] = macd - signal
-        
-        # 8. Bollinger Bands
-        bb_upper, bb_mid, bb_lower = BollingerBands(df)
-        features['bb_position'] = (df['Close'] - bb_lower) / (bb_upper - bb_lower + 1e-6)
-        features['bb_width'] = (bb_upper - bb_lower) / bb_mid
-        
-        # 9. Volatility
         features['atr'] = ATR(df, 14)
-        features['atr_pct'] = features['atr'] / df['Close']
-        features['volatility_10'] = df['Close'].pct_change().rolling(10).std()
-        features['volatility_20'] = df['Close'].pct_change().rolling(20).std()
-        
-        # 10. Stochastic
-        stoch_k, stoch_d = StochasticRSI(df)
-        features['stoch_k'] = stoch_k
-        features['stoch_d'] = stoch_d
-        
-        # 11. ADX
-        features['adx'] = ADX(df, 14)
-        
-        # 12. Support/Resistance distance
-        features['support_distance'] = (df['Close'] - df['Low'].rolling(20).min()) / df['Close']
-        features['resistance_distance'] = (df['High'].rolling(20).max() - df['Close']) / df['Close']
-        
-        # 13. Statistical features
-        for window in [10, 20]:
-            features[f'skew_{window}'] = df['Close'].rolling(window).skew()
-            features[f'kurtosis_{window}'] = df['Close'].rolling(window).kurt()
-        
+        bb_upper, bb_mid, bb_lower = BollingerBands(df)
+        features['bb_pct'] = (df['Close'] - bb_lower) / (bb_upper - bb_lower)
         features = features.dropna()
+        self.features = features.columns.tolist()
         return features
     
     def train(self, df):
-        """Train with hyperparameter tuning"""
-        try:
-            if len(df) < self.min_training_samples:
-                return False
-            
-            features = self._extract_features(df)
-            if len(features) < 50:
-                return False
-            
-            # Create target: 1=BUY, 0=HOLD, 2=SELL
-            future_returns = []
-            for horizon in [3, 5, 10]:
-                ret = df['Close'].shift(-horizon) / df['Close'] - 1
-                future_returns.append(ret)
-            
-            future_returns = pd.concat(future_returns, axis=1).mean(axis=1)
-            
-            target = pd.Series(index=df.index, dtype=int)
-            target[future_returns > 0.02] = 1  # BUY
-            target[future_returns < -0.02] = 2  # SELL
-            target[future_returns.abs() <= 0.02] = 0  # HOLD
-            
-            valid_idx = features.index.intersection(target.dropna().index)
-            X = features.loc[valid_idx]
-            y = target.loc[valid_idx]
-            
-            if len(X) < 50:
-                return False
-            
-            X_scaled = self.scaler.fit_transform(X)
-            X_train, X_test, y_train, y_test = train_test_split(
-                X_scaled, y, test_size=0.2, random_state=42, stratify=y
-            )
-            
-            # Hyperparameter tuning with GridSearch
-            param_grid = {
-                'n_estimators': [100, 200, 300],
-                'max_depth': [10, 15, 20],
-                'min_samples_split': [5, 10],
-                'min_samples_leaf': [2, 4]
-            }
-            
-            rf = RandomForestClassifier(random_state=42, n_jobs=-1)
-            grid_search = GridSearchCV(
-                rf, param_grid, cv=3, scoring='accuracy', n_jobs=-1, verbose=0
-            )
-            grid_search.fit(X_train, y_train)
-            
-            self.model = grid_search.best_estimator_
-            y_pred = self.model.predict(X_test)
-            accuracy = accuracy_score(y_test, y_pred)
-            
-            self.feature_importance = dict(zip(features.columns, self.model.feature_importances_))
-            self.accuracy_history.append(accuracy)
-            self.is_trained = True
-            
-            return True
-            
-        except Exception as e:
+        if len(df) < 100:
             return False
+        features = self._extract_features(df)
+        future_return = df['Close'].shift(-5) / df['Close'] - 1
+        target = pd.Series(index=df.index, dtype=int)
+        target[future_return > 0.02] = 1
+        target[future_return < -0.02] = 2
+        target[future_return.abs() <= 0.02] = 0
+        valid_idx = features.index.intersection(target.dropna().index)
+        X = features.loc[valid_idx]
+        y = target.loc[valid_idx]
+        if len(X) < 50:
+            return False
+        X_scaled = self.scaler.fit_transform(X)
+        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+        self.model = RandomForestClassifier(n_estimators=50, max_depth=10, random_state=42)
+        self.model.fit(X_train, y_train)
+        self.is_trained = True
+        return True
     
     def predict(self, df):
-        default = {
-            'signal': 0,
-            'confidence': 0,
-            'buy_prob': 0,
-            'sell_prob': 0,
-            'hold_prob': 100,
-            'model_version': self.model_version
-        }
-        
+        default = {'signal': 0, 'confidence': 0, 'buy_prob': 0, 'sell_prob': 0, 'hold_prob': 100}
         if not self.is_trained or len(df) < 50:
             return default
-        
-        try:
-            features = self._extract_features(df)
-            if features.empty:
-                return default
-            
-            X = features.iloc[-1:]
-            X_scaled = self.scaler.transform(X)
-            
-            pred = self.model.predict(X_scaled)[0]
-            proba = self.model.predict_proba(X_scaled)[0]
-            
-            if len(proba) < 3:
-                proba = list(proba) + [0] * (3 - len(proba))
-            
-            return {
-                'signal': int(pred),
-                'confidence': float(max(proba) * 100),
-                'buy_prob': float(proba[1]) * 100 if len(proba) > 1 else 0,
-                'sell_prob': float(proba[2]) * 100 if len(proba) > 2 else 0,
-                'hold_prob': float(proba[0]) * 100,
-                'model_version': self.model_version
-            }
-            
-        except Exception as e:
+        features = self._extract_features(df)
+        if features.empty:
             return default
+        X = features.iloc[-1:]
+        X_scaled = self.scaler.transform(X)
+        pred = self.model.predict(X_scaled)[0]
+        proba = self.model.predict_proba(X_scaled)[0]
+        if len(proba) < 3:
+            proba = list(proba) + [0] * (3 - len(proba))
+        return {
+            'signal': int(pred),
+            'confidence': float(max(proba) * 100),
+            'buy_prob': float(proba[1] * 100) if len(proba) > 1 else 0,
+            'sell_prob': float(proba[2] * 100) if len(proba) > 2 else 0,
+            'hold_prob': float(proba[0] * 100) if len(proba) > 0 else 0
+        }
 
 _predictor = None
 
 def get_predictor():
     global _predictor
     if _predictor is None:
-        _predictor = EnhancedAIPredictor()
+        _predictor = AIPredictor()
     return _predictor
 
-# =========================================================
-# ENHANCED ANALYSIS
-# =========================================================
-def analyze_mtf_enhanced(symbol, buffer_pct=0.5, confirmation_candles=3, 
-                        rr_sl=4.5, rr_tp=9.0, min_confirmations=2.5):
-    """Enhanced multi-timeframe analysis"""
+def safe_ai_score(df):
+    default = {'score': 50, 'signal_text': '🟡 HOLD', 'confidence': 0, 'buy_prob': 0, 'sell_prob': 0, 'hold_prob': 100}
     try:
-        df_1h = data_manager.get_data(symbol, "1h", "7d")
-        if df_1h is None or len(df_1h) < 30:
-            return None
-        
-        df_15m = data_manager.get_data(symbol, "15m", "5d")
-        if df_15m is None or len(df_15m) < 50:
-            df_15m = df_1h.copy()
-        
-        df_5m = data_manager.get_data(symbol, "5m", "2d")
-        if df_5m is None or len(df_5m) < 20:
-            df_5m = df_15m.copy()
-        
-        # Get latest values
-        latest_1h = df_1h.iloc[-1]
-        latest_15m = df_15m.iloc[-1]
-        latest_5m = df_5m.iloc[-1]
-        
-        # 1. Trend Analysis
-        def analyze_trend(df):
-            if df is None or len(df) < 20:
-                return "⚠️ Insufficient Data"
-            latest = df.iloc[-1]
-            price = latest['Close']
-            ema20 = EMA(df, 20).iloc[-1]
-            ema50 = EMA(df, 50).iloc[-1]
-            adx = ADX(df, 14).iloc[-1] if not pd.isna(ADX(df, 14).iloc[-1]) else 0
-            
-            if price > ema20 > ema50 and adx > 25:
-                return "🟢 BULLISH (Strong)"
-            elif price > ema20 > ema50:
-                return "🟢 BULLISH"
-            elif price < ema20 < ema50 and adx > 25:
-                return "🔴 BEARISH (Strong)"
-            elif price < ema20 < ema50:
-                return "🔴 BEARISH"
-            elif adx < 20:
-                return "🟡 SIDEWAYS (Weak Trend)"
-            else:
-                return "🟡 SIDEWAYS"
-        
-        trend_1h = analyze_trend(df_1h)
-        trend_15m = analyze_trend(df_15m)
-        trend_5m = analyze_trend(df_5m)
-        
-        # 2. Smart Money Analysis
-        sm_5m = enhanced_smart_money_analysis(df_5m)
-        
-        # 3. Support/Resistance
-        support_15m = latest_15m['Low'].rolling(20).min()
-        resistance_15m = latest_15m['High'].rolling(20).max()
-        
-        # 4. Volume Analysis
-        volume_ma = df_5m['Volume'].rolling(20).mean().iloc[-1]
-        vol_ratio = latest_5m['Volume'] / volume_ma if volume_ma > 0 else 1
-        vol_spike = vol_ratio > 1.5
-        
-        # 5. AI Prediction
         predictor = get_predictor()
         if not predictor.is_trained:
-            predictor.train(df_1h)
-        ai_pred = predictor.predict(df_5m)
-        
-        # 6. Entry Signal
-        entry_signal = None
-        confirmations = 0
-        reasons = []
-        
-        price = latest_5m['Close']
-        bullish = all('BULLISH' in t for t in [trend_1h, trend_15m, trend_5m])
-        bearish = all('BEARISH' in t for t in [trend_1h, trend_15m, trend_5m])
-        
-        support_confirmed = price <= support_15m * (1 + buffer_pct/100)
-        resistance_confirmed = price >= resistance_15m * (1 - buffer_pct/100)
-        
-        if support_confirmed:
-            confirmations += 1
-            reasons.append("Near Support")
-        if resistance_confirmed:
-            confirmations += 1
-            reasons.append("Near Resistance")
-        if vol_spike:
-            confirmations += 1
-            reasons.append("Volume Spike")
-        if sm_5m['signal'] in ['BULLISH', 'BEARISH']:
-            confirmations += 0.5
-            reasons.append(f"Smart Money: {sm_5m['signal']}")
-        if ai_pred['signal'] == 1:
-            confirmations += 0.5
-            reasons.append("AI: BUY")
-        elif ai_pred['signal'] == 2:
-            confirmations += 0.5
-            reasons.append("AI: SELL")
-        
-        # ADX filter - skip jika trend lemah
-        adx_value = ADX(df_1h, 14).iloc[-1] if not pd.isna(ADX(df_1h, 14).iloc[-1]) else 0
-        if adx_value < 20 and (bullish or bearish):
-            confirmations -= 0.5
-            reasons.append("Weak Trend (ADX<20)")
-        
-        if confirmations >= min_confirmations:
-            if bullish or (support_confirmed and sm_5m['signal'] == 'BULLISH'):
-                entry_signal = "🟢 STRONG BUY" if confirmations >= 3 else "🟢 BUY"
-            elif bearish or (resistance_confirmed and sm_5m['signal'] == 'BEARISH'):
-                entry_signal = "🔴 STRONG SELL" if confirmations >= 3 else "🔴 SELL"
-            elif support_confirmed and vol_spike:
-                entry_signal = "🟢 BUY (Breakout)"
-            elif resistance_confirmed and vol_spike:
-                entry_signal = "🔴 SELL (Breakdown)"
-        
-        entry_price = price
-        atr = ATR(df_5m, 14).iloc[-1] if not pd.isna(ATR(df_5m, 14).iloc[-1]) else price * 0.02
-        volatility_pct = (atr / price) * 100
-        
-        # Dynamic SL based on volatility
-        if volatility_pct > 5:
-            sl_mult = rr_sl * 1.3
-        elif volatility_pct < 2:
-            sl_mult = rr_sl * 0.8
+            predictor.train(df)
+        pred = predictor.predict(df)
+        if pred['signal'] == 1:
+            score = 50 + pred['buy_prob'] * 0.5
+            signal_text = "🟢 BUY"
+        elif pred['signal'] == 2:
+            score = 50 - pred['sell_prob'] * 0.5
+            signal_text = "🔴 SELL"
         else:
-            sl_mult = rr_sl
-        
-        if entry_signal and 'BUY' in entry_signal:
-            stop_loss = entry_price - atr * sl_mult
-            take_profit = entry_price + atr * rr_tp
-        elif entry_signal and 'SELL' in entry_signal:
-            stop_loss = entry_price + atr * sl_mult
-            take_profit = entry_price - atr * rr_tp
-        else:
-            stop_loss = None
-            take_profit = None
-        
-        # Total score
-        score_components = {
-            'trend': 20 if bullish else (10 if not bullish and not bearish else 0),
-            'smart_money': sm_5m['score'] * 0.3,
-            'ai': ai_pred['confidence'] * 0.3,
-            'volume': 10 if vol_spike else 0,
-            'confirmations': confirmations * 10
-        }
-        total_score = sum(score_components.values())
-        total_score = max(0, min(100, total_score))
-        confidence = min(100, confirmations / 3 * 100)
-        
+            score = 50
+            signal_text = "🟡 HOLD"
+        score = max(0, min(100, score))
         return {
-            'symbol': symbol,
-            'trend_1h': trend_1h,
-            'trend_15m': trend_15m,
-            'trend_5m': trend_5m,
-            'support': support_15m,
-            'resistance': resistance_15m,
-            'support_confirmed': support_confirmed,
-            'resistance_confirmed': resistance_confirmed,
-            'vol_spike_confirmed': vol_spike,
-            'confirmations': confirmations,
-            'entry_signal': entry_signal,
-            'entry_price': entry_price,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'price': price,
-            'atr': atr,
-            'volatility_pct': volatility_pct,
-            'smart_money': sm_5m,
-            'ai': ai_pred,
-            'total_score': total_score,
-            'confidence': confidence,
-            'reasons': reasons,
-            'adx_value': adx_value,
-            'volume_ratio': vol_ratio,
-            'score_components': score_components,
-            'df_1h': df_1h.tail(50),
-            'df_15m': df_15m.tail(50),
-            'df_5m': df_5m.tail(30)
+            'score': score,
+            'signal_text': signal_text,
+            'confidence': pred['confidence'],
+            'buy_prob': pred['buy_prob'],
+            'sell_prob': pred['sell_prob'],
+            'hold_prob': pred['hold_prob']
         }
-        
-    except Exception as e:
-        return None
-
-# =========================================================
-# TRADE EXECUTION
-# =========================================================
-def execute_trade_enhanced(symbol, balance=10000, position_size=100, leverage=10):
-    result = analyze_mtf_enhanced(symbol)
-    if not result or not result['entry_signal']:
-        return None
-    
-    entry_price = result['entry_price']
-    stop_loss = result['stop_loss']
-    take_profit = result['take_profit']
-    
-    if not entry_price or not stop_loss or not take_profit:
-        return None
-    
-    # Dynamic position sizing
-    risk_amount = balance * 0.02
-    risk_per_unit = abs(entry_price - stop_loss)
-    if risk_per_unit > 0:
-        optimal_position = risk_amount / risk_per_unit
-        position_size = min(optimal_position, position_size * 2)
-    
-    if 'BUY' in result['entry_signal']:
-        rr_ratio = (take_profit - entry_price) / (entry_price - stop_loss)
-    else:
-        rr_ratio = (entry_price - take_profit) / (stop_loss - entry_price)
-    
-    trade = {
-        'symbol': symbol,
-        'type': 'BUY' if 'BUY' in result['entry_signal'] else 'SELL',
-        'entry_price': entry_price,
-        'stop_loss': stop_loss,
-        'take_profit': take_profit,
-        'position_size': position_size,
-        'leverage': leverage,
-        'score': result['total_score'],
-        'confidence': result['confidence'],
-        'signal': result['entry_signal'],
-        'status': 'OPEN',
-        'entry_time': datetime.now(),
-        'smart_money_score': result['smart_money']['score'],
-        'ai_score': result['ai']['confidence'],
-        'rr_ratio': rr_ratio,
-        'max_profit': 0,
-        'min_profit': 0
-    }
-    
-    save_trade_enhanced(trade)
-    return trade
-
-def save_trade_enhanced(trade_data):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO trades (
-            symbol, type, entry_price, stop_loss, take_profit,
-            position_size, leverage, score, confidence, signal,
-            status, entry_time, smart_money_score, ai_score,
-            rr_ratio, max_profit, min_profit
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        trade_data.get('symbol'),
-        trade_data.get('type'),
-        trade_data.get('entry_price'),
-        trade_data.get('stop_loss'),
-        trade_data.get('take_profit'),
-        trade_data.get('position_size', 100),
-        trade_data.get('leverage', 10),
-        trade_data.get('score', 0),
-        trade_data.get('confidence', 0),
-        trade_data.get('signal'),
-        trade_data.get('status', 'OPEN'),
-        trade_data.get('entry_time', datetime.now()),
-        trade_data.get('smart_money_score', 0),
-        trade_data.get('ai_score', 0),
-        trade_data.get('rr_ratio', 0),
-        trade_data.get('max_profit', 0),
-        trade_data.get('min_profit', 0)
-    ))
-    conn.commit()
-    conn.close()
-    return True
-
-def get_trades_enhanced(limit=100):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
-
-def get_performance_enhanced():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM performance WHERE key = 'performance_stats'")
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return json.loads(row['value'])
-    return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
-
-def update_performance_enhanced(stats):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO performance (key, value, updated_at) VALUES (?, ?, ?)",
-        ("performance_stats", json.dumps(stats), datetime.now())
-    )
-    conn.commit()
-    conn.close()
-    return True
-
-def monitor_positions_enhanced():
-    trades = get_trades_enhanced()
-    open_trades = [t for t in trades if t.get('status') == 'OPEN']
-    
-    for trade in open_trades:
-        symbol = trade['symbol']
-        df = data_manager.get_data(symbol, "5m", "1d")
-        if df is None or df.empty:
-            continue
-        
-        current_price = df['Close'].iloc[-1]
-        entry = trade['entry_price']
-        sl = trade['stop_loss']
-        tp = trade['take_profit']
-        
-        if trade['type'] == 'BUY':
-            profit_pct = (current_price / entry - 1) * 100
-            if profit_pct > trade.get('max_profit', 0):
-                trade['max_profit'] = profit_pct
-            
-            # Trailing stop
-            if trade.get('max_profit', 0) > 5:
-                new_sl = max(sl, entry * (1 + trade.get('max_profit', 0) / 100 * 0.5))
-                if new_sl > sl:
-                    update_trade_enhanced(trade['id'], {'stop_loss': new_sl})
-                    sl = new_sl
-            
-            if current_price <= sl:
-                close_trade_enhanced(trade['id'], current_price, profit_pct)
-            elif current_price >= tp:
-                close_trade_enhanced(trade['id'], current_price, profit_pct)
-        else:
-            profit_pct = (entry / current_price - 1) * 100
-            if profit_pct > trade.get('max_profit', 0):
-                trade['max_profit'] = profit_pct
-            
-            if trade.get('max_profit', 0) > 5:
-                new_sl = min(sl, entry * (1 - trade.get('max_profit', 0) / 100 * 0.5))
-                if new_sl < sl:
-                    update_trade_enhanced(trade['id'], {'stop_loss': new_sl})
-                    sl = new_sl
-            
-            if current_price >= sl:
-                close_trade_enhanced(trade['id'], current_price, profit_pct)
-            elif current_price <= tp:
-                close_trade_enhanced(trade['id'], current_price, profit_pct)
-
-def close_trade_enhanced(trade_id, exit_price, profit_pct):
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT entry_time FROM trades WHERE id = ?", (trade_id,))
-    row = cursor.fetchone()
-    holding_period = 0
-    if row:
-        entry_time = datetime.fromisoformat(row[0])
-        holding_period = (datetime.now() - entry_time).seconds // 60
-    
-    cursor.execute('''
-        UPDATE trades 
-        SET status = 'CLOSED', exit_price = ?, profit_pct = ?,
-            exit_time = ?, holding_period = ?
-        WHERE id = ?
-    ''', (exit_price, profit_pct, datetime.now(), holding_period, trade_id))
-    conn.commit()
-    conn.close()
-    
-    stats = get_performance_enhanced()
-    stats['total_signals'] = stats.get('total_signals', 0) + 1
-    if profit_pct > 0:
-        stats['wins'] = stats.get('wins', 0) + 1
-    else:
-        stats['losses'] = stats.get('losses', 0) + 1
-    stats['total_profit'] = stats.get('total_profit', 0) + profit_pct
-    stats['win_rate'] = stats['wins'] / max(1, stats['total_signals']) * 100
-    update_performance_enhanced(stats)
-
-def update_trade_enhanced(trade_id, updates):
-    conn = get_db()
-    cursor = conn.cursor()
-    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-    values = list(updates.values()) + [trade_id]
-    cursor.execute(f"UPDATE trades SET {set_clause} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
-    return True
-
-def save_signal_enhanced(signal_data):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO signal_history (
-            symbol, signal, entry_price, stop_loss, take_profit,
-            trend_1h, trend_15m, score, confidence, ai_signal,
-            smart_money_score, adx_value, volatility_pct, volume_ratio, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        signal_data.get('symbol'),
-        signal_data.get('signal'),
-        signal_data.get('entry_price'),
-        signal_data.get('stop_loss'),
-        signal_data.get('take_profit'),
-        signal_data.get('trend_1h'),
-        signal_data.get('trend_15m'),
-        signal_data.get('score', 0),
-        signal_data.get('confidence', 0),
-        signal_data.get('ai_signal'),
-        signal_data.get('smart_money_score', 0),
-        signal_data.get('adx_value', 0),
-        signal_data.get('volatility_pct', 0),
-        signal_data.get('volume_ratio', 0),
-        datetime.now()
-    ))
-    conn.commit()
-    conn.close()
-    return True
-
-def get_signal_history_enhanced(limit=100):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM signal_history ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
-
-def get_watchlist_enhanced():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT symbol FROM watchlist ORDER BY added_at")
-    rows = cursor.fetchall()
-    conn.close()
-    return [row['symbol'] for row in rows] if rows else ["BTC"]
-
-def add_coin_enhanced(symbol):
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("INSERT INTO watchlist (symbol, added_at) VALUES (?, ?)", (symbol.upper(), datetime.now()))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        conn.close()
-        return False
-
-def remove_coin_enhanced(symbol):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
-    affected = cursor.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
-
-# =========================================================
-# TELEGRAM
-# =========================================================
-def send_telegram_enhanced(message):
-    try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        if bot_token and chat_id:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
     except:
-        pass
+        return default
 
 # =========================================================
-# FORMAT PRICE
+# ANALISIS TREND
 # =========================================================
-def format_price_enhanced(value):
-    if pd.isna(value) or value is None:
-        return "-"
-    if value >= 1000:
-        return f"$ {value:,.2f}"
-    elif value >= 100:
-        return f"$ {value:,.3f}"
-    elif value >= 1:
-        return f"$ {value:,.4f}"
-    elif value >= 0.01:
-        return f"$ {value:,.6f}"
+def analyze_trend(df, timeframe_name):
+    if df is None or len(df) < 20:
+        return "⚠️ Insufficient Data"
+    df = df.copy()
+    df["EMA20"] = EMA(df, 20)
+    df["EMA50"] = EMA(df, 50)
+    df["ADX"] = ADX(df)
+    last = df.iloc[-1]
+    price = last["Close"]
+    ema20 = last["EMA20"] if not pd.isna(last["EMA20"]) else price
+    ema50 = last["EMA50"] if not pd.isna(last["EMA50"]) else price
+    adx = last["ADX"] if not pd.isna(last["ADX"]) else 0
+    if price > ema20 > ema50 and adx > 25:
+        return "🟢 BULLISH (Strong)"
+    elif price > ema20 > ema50:
+        return "🟢 BULLISH"
+    elif price < ema20 < ema50 and adx > 25:
+        return "🔴 BEARISH (Strong)"
+    elif price < ema20 < ema50:
+        return "🔴 BEARISH"
     else:
-        return f"$ {value:,.8f}"
+        return "🟡 SIDEWAYS"
+
+# =========================================================
+# ANALISIS MULTI TIMEFRAME
+# =========================================================
+def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
+    df_1h = get_data_safe(symbol, "1h", min_candles=30)
+    if df_1h is None:
+        return None
+    df_15m = get_data_safe(symbol, "15m", min_candles=50)
+    if df_15m is None:
+        df_15m = df_1h.copy()
+    df_5m = get_data_safe(symbol, "5m", min_candles=20)
+    if df_5m is None:
+        df_5m = df_15m.copy()
+    
+    trend_1h = analyze_trend(df_1h, "1H")
+    trend_15m = analyze_trend(df_15m, "15M")
+    trend_5m = analyze_trend(df_5m, "5M")
+    
+    # BB Analysis 15M
+    df_15m["RSI"] = RSI(df_15m, 14)
+    df_15m["MACD"], df_15m["MACD_SIGNAL"], df_15m["MACD_HIST"] = MACD(df_15m)
+    df_15m["STOCH_K"], df_15m["STOCH_D"] = StochasticRSI(df_15m)
+    df_15m["BB_UPPER"], df_15m["BB_MIDDLE"], df_15m["BB_LOWER"] = BollingerBands(df_15m)
+    
+    last_15m = df_15m.iloc[-1]
+    price_15m = last_15m["Close"]
+    rsi_15m = last_15m["RSI"] if not pd.isna(last_15m["RSI"]) else 50
+    stoch_k = last_15m["STOCH_K"] if not pd.isna(last_15m["STOCH_K"]) else 50
+    stoch_d = last_15m["STOCH_D"] if not pd.isna(last_15m["STOCH_D"]) else 50
+    macd_hist = last_15m["MACD_HIST"] if not pd.isna(last_15m["MACD_HIST"]) else 0
+    macd_line = last_15m["MACD"] if not pd.isna(last_15m["MACD"]) else 0
+    macd_signal = last_15m["MACD_SIGNAL"] if not pd.isna(last_15m["MACD_SIGNAL"]) else 0
+    
+    bb_upper = last_15m["BB_UPPER"] if not pd.isna(last_15m["BB_UPPER"]) else price_15m * 1.05
+    bb_lower = last_15m["BB_LOWER"] if not pd.isna(last_15m["BB_LOWER"]) else price_15m * 0.95
+    bb_middle = last_15m["BB_MIDDLE"] if not pd.isna(last_15m["BB_MIDDLE"]) else price_15m
+    
+    # Support/Resistance
+    period = 20
+    recent_high = df_15m["High"].tail(period).max()
+    recent_low = df_15m["Low"].tail(period).min()
+    pivot = (df_15m["High"].tail(period).max() + df_15m["Low"].tail(period).min() + df_15m["Close"].tail(period).mean()) / 3
+    r1 = 2 * pivot - recent_low
+    s1 = 2 * pivot - recent_high
+    support = s1
+    resistance = r1
+    
+    support_buffer = support * (1 - buffer_pct / 100)
+    resistance_buffer = resistance * (1 + buffer_pct / 100)
+    
+    support_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > support_buffer) >= confirmation_candles
+    resistance_confirmed = sum(df_5m["Close"].tail(confirmation_candles) > resistance_buffer) >= confirmation_candles
+    
+    # BB Scoring
+    bb_score = 0
+    bb_reasons = []
+    if rsi_15m < 30 and price_15m < bb_lower:
+        bb_score += 25
+        bb_reasons.append("RSI Oversold + BB Bottom")
+    elif rsi_15m > 70 and price_15m > bb_upper:
+        bb_score -= 25
+        bb_reasons.append("RSI Overbought + BB Top")
+    if macd_hist > 0 and macd_line > macd_signal and price_15m > bb_middle:
+        bb_score += 30
+        bb_reasons.append("MACD Bullish + BB Middle")
+    elif macd_hist < 0 and macd_line < macd_signal and price_15m < bb_middle:
+        bb_score -= 30
+        bb_reasons.append("MACD Bearish + BB Middle")
+    if stoch_k < 20 and stoch_d < 20 and price_15m < bb_lower:
+        bb_score += 20
+        bb_reasons.append("Stoch Oversold + BB Bottom")
+    elif stoch_k > 80 and stoch_d > 80 and price_15m > bb_upper:
+        bb_score -= 20
+        bb_reasons.append("Stoch Overbought + BB Top")
+    
+    # 5M Entry
+    df_5m["RSI"] = RSI(df_5m, 14)
+    df_5m["Volume_MA"] = df_5m["Volume"].rolling(5).mean()
+    last_5m = df_5m.iloc[-1]
+    price_5m = last_5m["Close"]
+    rsi_5m = last_5m["RSI"] if not pd.isna(last_5m["RSI"]) else 50
+    
+    vol = df_5m["Volume"].iloc[-1]
+    vol_ma = df_5m["Volume_MA"].iloc[-1] if not pd.isna(df_5m["Volume_MA"].iloc[-1]) else vol
+    vol_spike = vol > vol_ma * 1.5 if vol_ma > 0 else False
+    if len(df_5m) > 1:
+        vol_prev = df_5m["Volume"].iloc[-2]
+        vol_ma_prev = df_5m["Volume_MA"].iloc[-2] if not pd.isna(df_5m["Volume_MA"].iloc[-2]) else vol_prev
+        vol_spike_prev = vol_prev > vol_ma_prev * 1.5 if vol_ma_prev > 0 else False
+        vol_spike_confirmed = vol_spike or vol_spike_prev
+    else:
+        vol_spike_confirmed = vol_spike
+    
+    confirmations = sum([support_confirmed, resistance_confirmed, vol_spike_confirmed])
+    
+    entry_signal = None
+    is_bullish = "BULLISH" in trend_1h
+    is_bearish = "BEARISH" in trend_1h
+    
+    if confirmations >= min_confirmations:
+        if is_bullish:
+            if support_confirmed and rsi_5m < 45 and bb_score >= 30:
+                entry_signal = "🟢 STRONG BUY (Pullback + BB Confirmed)"
+            elif support_confirmed and rsi_5m < 45:
+                entry_signal = "🟢 BUY (Pullback Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
+                entry_signal = "🟢 STRONG BUY (Breakout Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+        elif is_bearish:
+            if support_confirmed and rsi_5m > 55 and bb_score <= -30:
+                entry_signal = "🔴 STRONG SELL (Breakdown Confirmed)"
+            elif support_confirmed and rsi_5m > 55:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed and bb_score <= -20:
+                entry_signal = "🔴 STRONG SELL (Pullback Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🔴 SELL (Pullback Confirmed)"
+        else:
+            if resistance_confirmed and vol_spike_confirmed and bb_score >= 20:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+            elif resistance_confirmed and vol_spike_confirmed:
+                entry_signal = "🟢 BUY (Breakout Confirmed)"
+            elif support_confirmed and vol_spike_confirmed and bb_score <= -20:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
+            elif support_confirmed and vol_spike_confirmed:
+                entry_signal = "🔴 SELL (Breakdown Confirmed)"
+    
+    if entry_signal:
+        entry_price = df_5m["Close"].iloc[-1]
+        atr_value = ATR(df_5m, period=20).iloc[-1] if len(ATR(df_5m, period=20)) > 0 else 0.01
+        min_atr = entry_price * 0.005
+        atr_value = max(atr_value, min_atr)
+        if "BUY" in entry_signal:
+            stop_loss = entry_price - atr_value * rr_sl
+            take_profit = entry_price + atr_value * rr_tp
+        elif "SELL" in entry_signal:
+            stop_loss = entry_price + atr_value * rr_sl
+            take_profit = entry_price - atr_value * rr_tp
+        else:
+            stop_loss = take_profit = None
+    else:
+        entry_price = stop_loss = take_profit = None
+        atr_value = 0.01
+    
+    # Smart Money Score
+    sm_data = calculate_smart_money_score(df_5m)
+    
+    # AI Score
+    ai_data = safe_ai_score(df_5m)
+    
+    # Combined Score
+    total_score = (sm_data['score'] * 0.4 + ai_data['score'] * 0.4 + (bb_score + 50) * 0.2)
+    total_score = max(0, min(100, total_score))
+    
+    return {
+        "symbol": symbol,
+        "trend_1h": trend_1h,
+        "trend_15m": trend_15m,
+        "trend_5m": trend_5m,
+        "support": support,
+        "resistance": resistance,
+        "support_confirmed": support_confirmed,
+        "resistance_confirmed": resistance_confirmed,
+        "vol_spike_confirmed": vol_spike_confirmed,
+        "confirmations": confirmations,
+        "entry_signal": entry_signal,
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "rsi_5m": rsi_5m,
+        "rsi_15m": rsi_15m,
+        "price": price_5m,
+        "atr": atr_value,
+        "bb_score": bb_score,
+        "bb_reasons": bb_reasons,
+        "bb_upper": bb_upper,
+        "bb_middle": bb_middle,
+        "bb_lower": bb_lower,
+        "stoch_k": stoch_k,
+        "stoch_d": stoch_d,
+        "smart_money": sm_data,
+        "ai": ai_data,
+        "total_score": total_score,
+        "df_1h": df_1h.tail(50),
+        "df_15m": df_15m.tail(50),
+        "df_5m": df_5m.tail(30)
+    }
 
 # =========================================================
 # CREATE CHART
 # =========================================================
-def create_enhanced_chart(result, symbol):
+def create_chart(result, symbol):
     fig = make_subplots(
         rows=5, cols=1,
         shared_xaxes=True,
@@ -1236,7 +1102,7 @@ def create_enhanced_chart(result, symbol):
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=EMA(df, 20),
+            y=df["Close"].ewm(span=20).mean(),
             line=dict(color="#00a2ff", width=1.5),
             name="EMA20"
         ),
@@ -1245,7 +1111,7 @@ def create_enhanced_chart(result, symbol):
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=EMA(df, 50),
+            y=df["Close"].ewm(span=50).mean(),
             line=dict(color="#ffaa00", width=1.5, dash="dash"),
             name="EMA50"
         ),
@@ -1263,7 +1129,7 @@ def create_enhanced_chart(result, symbol):
             fig.add_hline(y=result["take_profit"], line_dash="dash", line_color="#00ff00", row=1, col=1)
     
     fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=RSI(df_15m, 14), line=dict(color="#a855f7", width=2), name="RSI (15M)"),
+        go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"),
         row=2, col=1
     )
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
@@ -1284,13 +1150,12 @@ def create_enhanced_chart(result, symbol):
         row=3, col=1
     )
     
-    stoch_k, stoch_d = StochasticRSI(df_15m)
     fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=stoch_k, line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
+        go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
         row=4, col=1
     )
     fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=stoch_d, line=dict(color="#ff00ff", width=1.5), name="Stoch D"),
+        go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_D"], line=dict(color="#ff00ff", width=1.5), name="Stoch D"),
         row=4, col=1
     )
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
@@ -1304,7 +1169,7 @@ def create_enhanced_chart(result, symbol):
     fig.add_trace(
         go.Scatter(
             x=df["Time"],
-            y=df["Volume"].rolling(20).mean(),
+            y=df["Volume"].rolling(5).mean(),
             line=dict(color="rgba(255,255,255,0.3)", width=1),
             name="Volume MA"
         ),
@@ -1315,7 +1180,7 @@ def create_enhanced_chart(result, symbol):
         template="plotly_dark",
         height=1100,
         title=dict(
-            text=f"<b>{symbol} - Enhanced Multi-Timeframe Analysis</b>",
+            text=f"<b>{symbol} - Multi Timeframe Analysis</b>",
             font=dict(color="#f1f5f9", size=22),
             x=0.5,
             xanchor="center"
@@ -1334,59 +1199,125 @@ def create_enhanced_chart(result, symbol):
     return fig
 
 # =========================================================
+# EXECUTE TRADE
+# =========================================================
+def execute_trade(symbol, df, balance=10000, position_size=100, leverage=10):
+    result = analyze_mtf(symbol)
+    if not result or not result["entry_signal"]:
+        return None
+    
+    entry_price = result["entry_price"]
+    stop_loss = result["stop_loss"]
+    take_profit = result["take_profit"]
+    
+    if not entry_price or not stop_loss or not take_profit:
+        return None
+    
+    trade = {
+        'symbol': symbol,
+        'type': 'BUY' if 'BUY' in result["entry_signal"] else 'SELL',
+        'entry_price': entry_price,
+        'stop_loss': stop_loss,
+        'take_profit': take_profit,
+        'position_size': position_size,
+        'leverage': leverage,
+        'score': result['total_score'],
+        'confidence': result['confirmations'] / 3 * 100,
+        'signal': result["entry_signal"],
+        'status': 'OPEN',
+        'entry_time': datetime.now(),
+        'smart_money_score': result['smart_money']['score'],
+        'ai_score': result['ai']['score']
+    }
+    
+    save_trade(trade)
+    return trade
+
+def monitor_positions():
+    trades = get_trades()
+    open_trades = [t for t in trades if t.get('status') == 'OPEN']
+    
+    for trade in open_trades:
+        symbol = trade['symbol']
+        ticker = yf.Ticker(f"{symbol}-USD")
+        df = ticker.history(period="1d", interval="5m")
+        if df.empty:
+            continue
+        current_price = df['Close'].iloc[-1]
+        
+        entry = trade['entry_price']
+        sl = trade['stop_loss']
+        tp = trade['take_profit']
+        
+        if trade['type'] == 'BUY':
+            if current_price <= sl:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = current_price
+                trade['profit_pct'] = (current_price / entry - 1) * 100
+                trade['exit_time'] = datetime.now()
+                update_trade(trade['id'], trade)
+                send_telegram(f"❌ SL HIT: {symbol} - Loss {trade['profit_pct']:.2f}%")
+            elif current_price >= tp:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = current_price
+                trade['profit_pct'] = (current_price / entry - 1) * 100
+                trade['exit_time'] = datetime.now()
+                update_trade(trade['id'], trade)
+                send_telegram(f"✅ TP HIT: {symbol} - Profit {trade['profit_pct']:.2f}%")
+        else:
+            if current_price >= sl:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = current_price
+                trade['profit_pct'] = (entry / current_price - 1) * 100
+                trade['exit_time'] = datetime.now()
+                update_trade(trade['id'], trade)
+                send_telegram(f"❌ SL HIT: {symbol} - Loss {trade['profit_pct']:.2f}%")
+            elif current_price <= tp:
+                trade['status'] = 'CLOSED'
+                trade['exit_price'] = current_price
+                trade['profit_pct'] = (entry / current_price - 1) * 100
+                trade['exit_time'] = datetime.now()
+                update_trade(trade['id'], trade)
+                send_telegram(f"✅ TP HIT: {symbol} - Profit {trade['profit_pct']:.2f}%")
+
+# =========================================================
 # BACKTEST
 # =========================================================
-def run_enhanced_backtest(symbol, period="3mo", interval="15m", rr_ratio=3.0, sl_atr=2.0):
-    """Run enhanced backtest with realistic assumptions"""
-    
-    df = data_manager.get_data(symbol, interval, period)
-    if df is None or df.empty:
+def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5):
+    ticker = yf.Ticker(f"{symbol}-USD")
+    df = ticker.history(period=period, interval=interval)
+    if df.empty:
         return None
     
     balance = 10000
-    initial_balance = balance
     trades = []
-    equity_curve = [balance]
     in_position = False
     entry_price = 0
     trade_type = None
     sl = 0
     tp = 0
-    max_profit = 0
-    
-    commission = 0.001
-    slippage = 0.0005
-    spread = 0.0002
+    atr = ATR(df, 14)
     
     for i in range(50, len(df)-1):
         window = df.iloc[:i+1].copy()
         if len(window) < 50:
             continue
         
+        # Get signal
+        result = analyze_mtf(symbol)
+        if not result:
+            continue
+        
         current_price = df['Close'].iloc[i]
         
         if not in_position:
-            price = current_price
-            ema20 = EMA(window, 20).iloc[-1]
-            ema50 = EMA(window, 50).iloc[-1]
-            rsi = RSI(window, 14).iloc[-1]
-            volume_ratio = window['Volume'].iloc[-1] / window['Volume'].rolling(20).mean().iloc[-1] if window['Volume'].rolling(20).mean().iloc[-1] > 0 else 1
-            
-            if price > ema20 > ema50 and rsi < 60 and volume_ratio > 1.2:
-                entry_signal = "BUY"
-            elif price < ema20 < ema50 and rsi > 40 and volume_ratio > 1.2:
-                entry_signal = "SELL"
-            else:
-                entry_signal = None
-            
-            if entry_signal:
+            if result["entry_signal"]:
                 in_position = True
-                entry_price = current_price * (1 + spread if entry_signal == "BUY" else 1 - spread)
-                trade_type = entry_signal
+                entry_price = current_price
+                trade_type = 'BUY' if 'BUY' in result["entry_signal"] else 'SELL'
+                atr_value = atr.iloc[i] if i < len(atr) else atr.iloc[-1]
                 
-                atr_value = ATR(df, 14).iloc[i] if i < len(df) else ATR(df, 14).iloc[-1]
-                
-                if trade_type == "BUY":
+                if trade_type == 'BUY':
                     sl = entry_price - atr_value * sl_atr
                     tp = entry_price + atr_value * sl_atr * rr_ratio
                 else:
@@ -1400,104 +1331,77 @@ def run_enhanced_backtest(symbol, period="3mo", interval="15m", rr_ratio=3.0, sl
                     'sl': sl,
                     'tp': tp
                 })
-        
         else:
-            actual_price = df['Close'].iloc[i]
-            
-            if trade_type == "BUY":
-                profit_pct = (actual_price / entry_price - 1) * 100
-                max_profit = max(max_profit, profit_pct)
-                
-                if actual_price <= sl * (1 - slippage):
-                    exit_price = sl * (1 - slippage)
+            if trade_type == 'BUY':
+                if current_price <= sl:
+                    exit_price = sl
                     profit_pct = (exit_price / entry_price - 1) * 100
-                    profit_pct_net = profit_pct * (1 - commission)
-                    balance *= (1 + profit_pct_net/100)
+                    balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct_net})
-                elif actual_price >= tp * (1 + slippage):
-                    exit_price = tp * (1 + slippage)
+                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                elif current_price >= tp:
+                    exit_price = tp
                     profit_pct = (exit_price / entry_price - 1) * 100
-                    profit_pct_net = profit_pct * (1 - commission)
-                    balance *= (1 + profit_pct_net/100)
+                    balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct_net})
+                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
             else:
-                profit_pct = (entry_price / actual_price - 1) * 100
-                max_profit = max(max_profit, profit_pct)
-                
-                if actual_price >= sl * (1 + slippage):
-                    exit_price = sl * (1 + slippage)
+                if current_price >= sl:
+                    exit_price = sl
                     profit_pct = (entry_price / exit_price - 1) * 100
-                    profit_pct_net = profit_pct * (1 - commission)
-                    balance *= (1 + profit_pct_net/100)
+                    balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct_net})
-                elif actual_price <= tp * (1 - slippage):
-                    exit_price = tp * (1 - slippage)
+                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                elif current_price <= tp:
+                    exit_price = tp
                     profit_pct = (entry_price / exit_price - 1) * 100
-                    profit_pct_net = profit_pct * (1 - commission)
-                    balance *= (1 + profit_pct_net/100)
+                    balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct_net})
-        
-        equity_curve.append(balance)
+                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
     
-    if trades:
-        profits = [t.get('profit_pct', 0) for t in trades if 'profit_pct' in t]
-        wins = len([p for p in profits if p > 0])
-        losses = len([p for p in profits if p < 0])
-        total_profit = sum(profits)
-        
-        equity_series = pd.Series(equity_curve)
-        drawdown = (equity_series - equity_series.expanding().max()) / equity_series.expanding().max() * 100
-        
-        metrics = {
-            'trades': trades,
-            'total_trades': len(trades),
-            'wins': wins,
-            'losses': losses,
-            'win_rate': wins / max(1, len(trades)) * 100,
-            'total_profit': total_profit,
-            'final_balance': balance,
-            'total_return': (balance / initial_balance - 1) * 100,
-            'max_drawdown': drawdown.min(),
-            'sharpe_ratio': np.mean(profits) / (np.std(profits) + 1e-6) * np.sqrt(252) if profits else 0,
-            'profit_factor': abs(sum([p for p in profits if p > 0]) / sum([abs(p) for p in profits if p < 0])) if any(p < 0 for p in profits) else 0
-        }
-        
-        return metrics
+    wins = len([t for t in trades if t.get('profit_pct', 0) > 0])
+    total_profit = sum([t.get('profit_pct', 0) for t in trades])
     
-    return None
+    return {
+        'trades': trades,
+        'total_trades': len(trades),
+        'wins': wins,
+        'losses': len(trades) - wins,
+        'win_rate': (wins / max(1, len(trades)) * 100),
+        'total_profit': total_profit,
+        'final_balance': balance,
+        'total_return': (balance / 10000 - 1) * 100
+    }
 
 # =========================================================
-# MAIN APP
+# INITIALIZATION
 # =========================================================
+init_db()
 
 # Session State
 if "watchlist" not in st.session_state:
-    st.session_state.watchlist = get_watchlist_enhanced()
+    st.session_state.watchlist = get_watchlist()
 
 if "selected_coin" not in st.session_state:
     st.session_state.selected_coin = st.session_state.watchlist[0] if st.session_state.watchlist else "BTC"
 
-if "pending_signals" not in st.session_state:
-    st.session_state.pending_signals = {}
+if "pending_signal" not in st.session_state:
+    st.session_state.pending_signal = {}
+
+if "signal_history" not in st.session_state:
+    st.session_state.signal_history = get_signal_history()
 
 if "performance_stats" not in st.session_state:
-    st.session_state.performance_stats = get_performance_enhanced()
+    st.session_state.performance_stats = get_performance()
 
 if "backtest_result" not in st.session_state:
     st.session_state.backtest_result = None
 
-if "auto_trade" not in st.session_state:
-    st.session_state.auto_trade = False
-
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖 Crypto Trading Bot PRO")
-st.caption("Enhanced Random Forest AI | Smart Money | Dynamic Risk Management | Multi-Timeframe")
+st.title("🤖")
+st.caption("Multi Timeframe: 1H | 15M | 5M | Smart Money | AI Prediction | Auto Trading")
 
 # =========================================================
 # SIDEBAR
@@ -1516,11 +1420,11 @@ with st.sidebar:
             if new_coin:
                 coin = new_coin.upper().strip()
                 if coin not in st.session_state.watchlist:
-                    if add_coin_enhanced(coin):
+                    if add_coin(coin):
                         st.session_state.watchlist.append(coin)
                         st.rerun()
                     else:
-                        st.error("❌ Failed to add coin!")
+                        st.error("❌ Gagal tambah coin!")
                 else:
                     st.warning(f"⚠️ {coin} already exists!")
     
@@ -1530,74 +1434,71 @@ with st.sidebar:
         col_idx = idx % 3
         with cols[col_idx]:
             if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
-                if remove_coin_enhanced(coin):
+                if remove_coin(coin):
                     st.session_state.watchlist.remove(coin)
                     st.rerun()
                 else:
-                    st.error(f"❌ Failed to remove {coin}!")
+                    st.error(f"❌ Gagal hapus {coin}!")
     
     st.divider()
     
     st.subheader("📊 Trading Settings")
     refresh = st.slider("🔄 Refresh (detik)", 10, 60, 30)
-    leverage = st.slider("⚡ Leverage", 1, 125, 5)
+    leverage = st.slider("⚡ Leverage", 1, 125, 10)
     position_size = st.number_input("💰 Position Size (USD)", 10, 100000, 100, step=10)
     
-    st.subheader("🎯 Risk Management")
-    risk_per_trade = st.slider("Risk per Trade (%)", 0.5, 5.0, 2.0, 0.5)
-    rr_sl = st.slider("Stop Loss (ATR)", 2.0, 8.0, 4.5, 0.5)
-    rr_tp = st.slider("Take Profit (ATR)", 4.0, 15.0, 9.0, 0.5)
-    use_trailing = st.toggle("🚀 Trailing Stop", value=True)
+    rr_sl = st.slider("Stop Loss (ATR)", 1.0, 5.0, 3.0, 0.5)
+    rr_tp = st.slider("Take Profit (ATR)", 3.0, 12.0, 7.0, 0.5)
+    use_trailing = st.toggle("🚀 Use Trailing Stop", value=True)
     
     hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15)
-    buffer_pct = st.slider("Buffer Level (%)", 0.1, 2.0, 0.8, 0.1)
-    min_confirmations = st.slider("Min Konfirmasi", 1.0, 3.0, 2.5, 0.5)
+    buffer_pct = st.slider("Buffer Level (%)", 0.1, 1.0, 0.5, 0.1)
+    confirmation_candles = st.slider("Konfirmasi Candle", 1, 5, 3)
+    min_confirmations = st.slider("Min Konfirmasi", 1, 3, 2)
     
     st.divider()
     
     st.subheader("📱 Telegram Alert")
     if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram_enhanced("🚀 Telegram Connected! Enhanced Bot PRO Aktif.")
-        st.success("✅ Test message sent!")
+        send_telegram("🚀 Telegram Connected! Scanner PRO Aktif.")
+        st.success("✅ Pesan test terkirim!")
     
     st.divider()
     
     st.subheader("📊 Status")
     st.metric("Total Coins", len(st.session_state.watchlist))
-    st.metric("Storage", "✅ SQLite PRO")
-    st.metric("Pending Signals", len(st.session_state.pending_signals))
-    stats = get_performance_enhanced()
+    st.metric("Storage", "✅ SQLite")
+    st.metric("Pending Signals", len(st.session_state.pending_signal))
+    stats = get_performance()
     st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-    st.metric("Total Profit", f"${stats.get('total_profit', 0):.2f}")
-    
     st.caption(f"🔄 Auto Refresh: {refresh} detik")
-    st.caption(f"🎯 Risk per Trade: {risk_per_trade}%")
-    st.caption(f"📊 RR Ratio: 1:{rr_tp/rr_sl:.1f}")
 
 # =========================================================
 # AUTO REFRESH
 # =========================================================
-st_autorefresh(interval=refresh * 1000, key="refresh_pro")
+st_autorefresh(interval=refresh * 1000, key="refresh")
 
 # =========================================================
 # MAIN TABS
 # =========================================================
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 Scanner", "📈 Smart Money", "🤖 AI Signals",
+    "📊 Scanner", "📈 Smart Money", "🤖 AI Signals", 
     "📋 Trades", "📜 History", "🔄 Backtest"
 ])
 
-# =========================================================
-# TAB 1: SCANNER
-# =========================================================
+# ==================== TAB 1: SCANNER ====================
 with tab1:
-    st.subheader("📊 Enhanced Signal Scanner")
+    st.subheader("📊 Signal Summary")
     
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("⏰ Time", datetime.now().strftime("%H:%M:%S"))
-    col2.metric("📊 Total Coins", len(st.session_state.watchlist))
-    col3.metric("🎯 Active Signals", len(st.session_state.pending_signals))
-    col4.metric("📈 Win Rate", f"{st.session_state.performance_stats.get('win_rate', 0):.1f}%")
+    current_time = datetime.now()
+    expired_signals = []
+    for symbol, data in st.session_state.pending_signal.items():
+        elapsed = (current_time - data["time"]).seconds / 60
+        if elapsed > hold_minutes:
+            expired_signals.append(symbol)
+    
+    for symbol in expired_signals:
+        del st.session_state.pending_signal[symbol]
     
     all_signals = []
     progress_bar = st.progress(0)
@@ -1607,28 +1508,27 @@ with tab1:
         progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:20]))
         status_text.text(f"🔄 Scanning {symbol}...")
         
-        result = analyze_mtf_enhanced(
-            symbol,
-            buffer_pct,
-            confirmation_candles=3,
-            rr_sl=rr_sl,
-            rr_tp=rr_tp,
-            min_confirmations=min_confirmations
-        )
+        result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
         
         if result:
-            if result["entry_signal"] and symbol not in st.session_state.pending_signals:
-                st.session_state.pending_signals[symbol] = {
+            pending = st.session_state.pending_signal.get(symbol)
+            if pending:
+                entry_display = pending["signal"]
+                is_pending = True
+            else:
+                entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
+                is_pending = False
+            
+            if result["entry_signal"] and symbol not in st.session_state.pending_signal:
+                st.session_state.pending_signal[symbol] = {
                     "signal": result["entry_signal"],
                     "time": datetime.now(),
                     "entry": result["entry_price"],
                     "sl": result["stop_loss"],
-                    "tp": result["take_profit"],
-                    "score": result["total_score"],
-                    "confidence": result["confidence"]
+                    "tp": result["take_profit"]
                 }
                 
-                save_signal_enhanced({
+                save_signal({
                     'symbol': symbol,
                     'signal': result["entry_signal"],
                     'entry_price': result["entry_price"],
@@ -1637,31 +1537,20 @@ with tab1:
                     'trend_1h': result["trend_1h"],
                     'trend_15m': result["trend_15m"],
                     'score': result['total_score'],
-                    'confidence': result['confidence'],
+                    'confidence': result['confirmations'] / 3 * 100,
                     'ai_signal': result['ai']['signal_text'],
-                    'smart_money_score': result['smart_money']['score'],
-                    'adx_value': result.get('adx_value', 0),
-                    'volatility_pct': result['volatility_pct'],
-                    'volume_ratio': result.get('volume_ratio', 0)
+                    'smart_money_score': result['smart_money']['score']
                 })
                 
-                stats = get_performance_enhanced()
+                stats = get_performance()
                 stats['total_signals'] = stats.get('total_signals', 0) + 1
-                update_performance_enhanced(stats)
+                update_performance(stats)
                 
-                msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nScore: {result['total_score']:.0f}\nConfidence: {result['confidence']:.1f}%"
-                send_telegram_enhanced(msg)
-                
-                if st.session_state.auto_trade:
-                    execute_trade_enhanced(symbol)
-            
-            pending = st.session_state.pending_signals.get(symbol)
-            if pending:
-                entry_display = pending["signal"]
-                is_pending = True
-            else:
-                entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
-                is_pending = False
+                if result["entry_signal"]:
+                    rr = ((result["take_profit"] / result["entry_price"] - 1) / 
+                          (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+                    msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    send_telegram(msg)
             
             all_signals.append({
                 "Coin": symbol,
@@ -1670,11 +1559,11 @@ with tab1:
                 "Trend 5M": result["trend_5m"],
                 "Signal": "🟡 PENDING" if is_pending else entry_display,
                 "Score": f"{result['total_score']:.0f}",
-                "Confidence": f"{result['confidence']:.0f}%",
-                "SM Score": result['smart_money']['score'],
+                "BB Score": result["bb_score"],
+                "RSI 5M": f"{result['rsi_5m']:.1f}",
                 "AI": result['ai']['signal_text'],
-                "Confirm": f"{result['confirmations']:.1f}/3",
-                "Volatility": f"{result['volatility_pct']:.1f}%"
+                "SM Score": result['smart_money']['score'],
+                "Confirm": f"{result['confirmations']}/3"
             })
     
     progress_bar.empty()
@@ -1686,182 +1575,148 @@ with tab1:
         st.dataframe(df_signals, use_container_width=True, hide_index=True)
         
         best = df_signals.iloc[0]
-        st.success(f"🏆 Best Signal: **{best['Coin']}** | Score: {best['Score']} | {best['Signal']} | Confidence: {best['Confidence']}")
+        st.success(f"🏆 Best Coin: **{best['Coin']}** | Score: {best['Score']} | {best['Signal']}")
     else:
-        st.info("ℹ️ No signals found")
+        st.info("ℹ️ Tidak ada data")
     
-    if st.session_state.pending_signals:
+    # Pending Signals
+    if st.session_state.pending_signal:
         st.divider()
         st.subheader("⏳ Pending Signals (Aktif)")
         st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit")
         
-        cols = st.columns(min(len(st.session_state.pending_signals), 4))
-        for idx, (symbol, data) in enumerate(st.session_state.pending_signals.items()):
+        cols = st.columns(min(len(st.session_state.pending_signal), 4))
+        for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
             col_idx = idx % len(cols)
             with cols[col_idx]:
                 elapsed = (datetime.now() - data["time"]).seconds / 60
                 remaining = max(0, hold_minutes - elapsed)
-                rr = ((data["tp"] - data["entry"]) / (data["entry"] - data["sl"])) if data["sl"] and data["entry"] - data["sl"] != 0 else 0
-                
+                rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
                 st.markdown(f"""
                 <div class="pending-signal">
                     <b>{symbol}</b><br>
                     {data['signal']}<br>
-                    Entry: {format_price_enhanced(data['entry'])}<br>
-                    SL: {format_price_enhanced(data['sl'])}<br>
-                    TP: {format_price_enhanced(data['tp'])}<br>
-                    Score: {data['score']:.0f}<br>
+                    Entry: {format_price(data['entry'])}<br>
+                    SL: {format_price(data['sl'])}<br>
+                    TP: {format_price(data['tp'])}<br>
                     RR: {rr:.2f}<br>
                     ⏱️ {remaining:.0f}m remaining
                 </div>
                 """, unsafe_allow_html=True)
 
-# =========================================================
-# TAB 2: SMART MONEY
-# =========================================================
+# ==================== TAB 2: SMART MONEY ====================
 with tab2:
-    st.subheader("📈 Enhanced Smart Money Analysis")
+    st.subheader("📈 Smart Money Concepts Analysis")
     
-    sm_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="sm_select_pro")
+    sm_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="sm_select")
     
     if sm_coin:
-        result = analyze_mtf_enhanced(
-            sm_coin,
-            buffer_pct,
-            confirmation_candles=3,
-            rr_sl=rr_sl,
-            rr_tp=rr_tp,
-            min_confirmations=min_confirmations
-        )
+        result = analyze_mtf(sm_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
         
         if result:
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Smart Money Score", f"{result['smart_money']['score']:.0f}/100")
-            col2.metric("Market Structure", result['smart_money']['signal'])
-            col3.metric("Order Blocks", len(result['smart_money']['order_blocks']))
-            col4.metric("FVG", len(result['smart_money']['fvgs']))
+            col2.metric("Market Structure", 
+                       "🟢 Bullish" if result['smart_money']['reasons'] else "🟡 Neutral")
+            col3.metric("Order Blocks", len(result['smart_money']['reasons']))
+            col4.metric("Total Confirmations", f"{result['confirmations']}/3")
             
             with st.expander("📋 Smart Money Details", expanded=True):
                 for reason in result['smart_money']['reasons']:
                     st.write(f"• {reason}")
-                
-                st.subheader("Order Blocks")
-                for ob in result['smart_money']['order_blocks']:
-                    st.write(f"• {ob['type']}: {format_price_enhanced(ob['low'])} - {format_price_enhanced(ob['high'])} (Strength: {ob['strength']:.2f})")
-                
-                st.subheader("Fair Value Gaps")
-                for fvg in result['smart_money']['fvgs']:
-                    st.write(f"• {fvg['type']}: {format_price_enhanced(fvg['low'])} - {format_price_enhanced(fvg['high'])} (Size: {fvg['size']:.2f}%)")
             
-            fig = create_enhanced_chart(result, sm_coin)
+            # Chart
+            fig = create_chart(result, sm_coin)
             st.plotly_chart(fig, use_container_width=True)
 
-# =========================================================
-# TAB 3: AI SIGNALS
-# =========================================================
+# ==================== TAB 3: AI SIGNALS ====================
 with tab3:
-    st.subheader("🤖 Enhanced AI Signal Analysis (Random Forest)")
+    st.subheader("🤖 AI Signal Analysis")
     
-    ai_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="ai_select_pro")
+    ai_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="ai_select")
     
     if ai_coin:
-        df_train = data_manager.get_data(ai_coin, "15m", "7d")
-        if df_train is not None and not df_train.empty:
+        ticker = yf.Ticker(f"{ai_coin}-USD")
+        df = ticker.history(period="7d", interval="15m")
+        
+        if not df.empty:
             predictor = get_predictor()
             if not predictor.is_trained:
-                with st.spinner("Training AI model with Random Forest..."):
-                    predictor.train(df_train)
-                    if predictor.is_trained:
-                        st.success("✅ AI Model Trained Successfully!")
-                    else:
-                        st.warning("⚠️ Insufficient data for training")
-        
-        result = analyze_mtf_enhanced(
-            ai_coin,
-            buffer_pct,
-            confirmation_candles=3,
-            rr_sl=rr_sl,
-            rr_tp=rr_tp,
-            min_confirmations=min_confirmations
-        )
-        
-        if result:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("AI Confidence", f"{result['ai']['confidence']:.0f}/100")
-            col2.metric("Signal", result['ai']['signal_text'])
-            col3.metric("Model", result['ai'].get('model_version', 'RF v2.0'))
-            col4.metric("Strength", "STRONG" if result['ai']['confidence'] > 70 else "WEAK")
+                predictor.train(df)
+                if predictor.is_trained:
+                    st.success("✅ AI Model Trained!")
             
-            prob_df = pd.DataFrame({
-                'Signal': ['Buy', 'Sell', 'Hold'],
-                'Probability': [
-                    result['ai']['buy_prob'],
-                    result['ai']['sell_prob'],
-                    result['ai']['hold_prob']
-                ]
-            })
-            st.subheader("📊 Probability Distribution")
-            st.bar_chart(prob_df.set_index('Signal'))
+            result = analyze_mtf(ai_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
             
-            if predictor.is_trained and predictor.feature_importance:
-                st.subheader("📊 Top 10 Feature Importance")
-                imp_df = pd.DataFrame(
-                    list(predictor.feature_importance.items()),
-                    columns=['Feature', 'Importance']
-                ).sort_values('Importance', ascending=False).head(10)
-                st.dataframe(imp_df, use_container_width=True, hide_index=True)
+            if result:
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("AI Score", f"{result['ai']['score']:.0f}/100")
+                col2.metric("Signal", result['ai']['signal_text'])
+                col3.metric("Confidence", f"{result['ai']['confidence']:.1f}%")
+                col4.metric("Strength", "STRONG" if result['ai']['confidence'] > 70 else "WEAK")
+                
+                prob_df = pd.DataFrame({
+                    'Signal': ['Buy', 'Sell', 'Hold'],
+                    'Probability': [result['ai']['buy_prob'], result['ai']['sell_prob'], result['ai']['hold_prob']]
+                })
+                st.subheader("📊 Probability Distribution")
+                st.bar_chart(prob_df.set_index('Signal'))
 
-# =========================================================
-# TAB 4: TRADES
-# =========================================================
+# ==================== TAB 4: TRADES ====================
 with tab4:
     st.subheader("📋 Trade Management")
     
-    auto_trade = st.toggle("🤖 Auto Trading", value=st.session_state.auto_trade)
-    st.session_state.auto_trade = auto_trade
+    auto_trade = st.toggle("🤖 Auto Trading", value=True)
     
     if auto_trade:
-        st.info("🤖 Auto Trading ACTIVE! Monitoring positions...")
-        monitor_positions_enhanced()
-        st_autorefresh(interval=60000, key="auto_trade_refresh")
+        st.info("🤖 Auto Trading AKTIF! Monitoring posisi...")
+        
+        monitor_positions()
+        
+        for symbol in st.session_state.watchlist[:5]:
+            ticker = yf.Ticker(f"{symbol}-USD")
+            df = ticker.history(period="7d", interval="15m")
+            if not df.empty:
+                trade = execute_trade(symbol, df, position_size=position_size, leverage=leverage)
+                if trade:
+                    st.success(f"🚀 {symbol}: {trade['signal']} at ${trade['entry_price']:.2f}")
+                    send_telegram(f"🚀 NEW TRADE: {symbol} - {trade['signal']} at ${trade['entry_price']:.2f}")
     
-    trades = get_trades_enhanced()
+    # Open positions
+    st.subheader("📊 Open Positions")
+    trades = get_trades()
     open_trades = [t for t in trades if t.get('status') == 'OPEN']
     
-    st.subheader("📊 Open Positions")
     if open_trades:
         df_open = pd.DataFrame(open_trades)
-        display_cols = ['symbol', 'type', 'entry_price', 'stop_loss', 'take_profit', 
-                       'score', 'confidence', 'rr_ratio', 'entry_time']
-        available_cols = [c for c in display_cols if c in df_open.columns]
-        st.dataframe(df_open[available_cols], use_container_width=True)
+        cols = ['symbol', 'type', 'entry_price', 'stop_loss', 'take_profit', 'score', 'entry_time']
+        available = [c for c in cols if c in df_open.columns]
+        st.dataframe(df_open[available], use_container_width=True)
     else:
         st.info("No open positions")
     
+    # Closed trades
     st.subheader("📊 Closed Trades")
     closed_trades = [t for t in trades if t.get('status') == 'CLOSED']
     
     if closed_trades:
         df_closed = pd.DataFrame(closed_trades)
-        display_cols = ['symbol', 'type', 'entry_price', 'exit_price', 
-                       'profit_pct', 'holding_period', 'exit_time']
-        available_cols = [c for c in display_cols if c in df_closed.columns]
-        st.dataframe(df_closed[available_cols], use_container_width=True)
+        cols = ['symbol', 'type', 'entry_price', 'exit_price', 'profit_pct', 'exit_time']
+        available = [c for c in cols if c in df_closed.columns]
+        st.dataframe(df_closed[available], use_container_width=True)
         
-        stats = get_performance_enhanced()
+        stats = get_performance()
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Trades", stats.get('total_signals', 0))
         col2.metric("Wins", stats.get('wins', 0))
         col3.metric("Losses", stats.get('losses', 0))
         col4.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
 
-# =========================================================
-# TAB 5: HISTORY
-# =========================================================
+# ==================== TAB 5: HISTORY ====================
 with tab5:
     st.subheader("📜 Signal History")
     
-    history = get_signal_history_enhanced(limit=100)
+    history = get_signal_history(limit=50)
     if history:
         df_history = pd.DataFrame(history)
         if 'id' in df_history.columns:
@@ -1872,53 +1727,62 @@ with tab5:
         st.download_button(
             label="📥 Download CSV",
             data=csv,
-            file_name=f"history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            file_name=f"history_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv"
         )
     else:
-        st.info("No signals yet")
+        st.info("Belum ada sinyal")
 
-# =========================================================
-# TAB 6: BACKTEST
-# =========================================================
+# ==================== TAB 6: BACKTEST ====================
 with tab6:
-    st.subheader("🔄 Enhanced Backtesting")
+    st.subheader("🔄 Backtesting")
     
     col1, col2 = st.columns(2)
     with col1:
-        bt_coin = st.selectbox("Coin", st.session_state.watchlist, key="bt_select_pro")
-        bt_period = st.selectbox("Period", ["1mo", "3mo", "6mo", "1y"], index=1)
+        bt_coin = st.selectbox("Coin", st.session_state.watchlist, key="bt_select")
+        bt_period = st.selectbox("Period", ["1mo", "3mo", "6mo", "1y"], index=2)
     with col2:
-        bt_interval = st.selectbox("Interval", ["15m", "30m", "1h", "4h"], index=2)
+        bt_interval = st.selectbox("Interval", ["15m", "30m", "1h"], index=1)
         bt_rr = st.slider("RR Ratio", 1.0, 5.0, 3.0, 0.5)
     
-    if st.button("🚀 Run Enhanced Backtest", use_container_width=True):
+    if st.button("🚀 Run Backtest", use_container_width=True):
         with st.spinner(f"Running backtest on {bt_coin}..."):
-            result = run_enhanced_backtest(bt_coin, bt_period, bt_interval, bt_rr)
+            result = run_backtest(bt_coin, bt_period, bt_interval, bt_rr)
             
             if result:
                 st.session_state.backtest_result = result
-                
-                col1, col2, col3, col4, col5, col6 = st.columns(6)
+                col1, col2, col3, col4, col5 = st.columns(5)
                 col1.metric("Total Trades", result['total_trades'])
                 col2.metric("Win Rate", f"{result['win_rate']:.1f}%")
                 col3.metric("Total Profit", f"{result['total_profit']:.2f}%")
                 col4.metric("Final Balance", f"${result['final_balance']:.2f}")
                 col5.metric("Total Return", f"{result['total_return']:.1f}%")
-                col6.metric("Max Drawdown", f"{result['max_drawdown']:.1f}%")
                 
                 if result['trades']:
                     df_bt = pd.DataFrame(result['trades'])
                     st.dataframe(df_bt, use_container_width=True)
 
 # =========================================================
+# PERFORMANCE STATISTICS
+# =========================================================
+st.divider()
+st.subheader("📊 Performance Statistics")
+
+stats = get_performance()
+col1, col2, col3, col4, col5 = st.columns(5)
+col1.metric("Total Signals", stats.get("total_signals", 0))
+col2.metric("Wins", stats.get("wins", 0))
+col3.metric("Losses", stats.get("losses", 0))
+col4.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
+col5.metric("Total Profit", f"${stats.get('total_profit', 0):.2f}")
+
+# =========================================================
 # FOOTER
 # =========================================================
 st.divider()
 st.caption(f"""
-🔄 Enhanced System | Multi-Timeframe: 1H, 15M, 5M
-📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x
-🎯 Dynamic Risk: {risk_per_trade}% | 📊 RR: 1:{rr_tp/rr_sl:.1f}
-💾 Database: SQLite PRO | 🤖 AI: Random Forest v2.0
-🛡️ Trailing Stop: {'ACTIVE' if use_trailing else 'INACTIVE'}
+🔄 Data dari Yahoo Finance | Multi Timeframe: 1H, 15M, 5M  
+📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
+🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
+💾 Database: SQLite | 🤖 AI: Random Forest
 """)
