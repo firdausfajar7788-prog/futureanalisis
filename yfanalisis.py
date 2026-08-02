@@ -6,7 +6,6 @@ import yfinance as yf
 import requests
 from datetime import datetime, timedelta
 import time
-import sqlite3
 import json
 import ta
 import numpy as np
@@ -19,6 +18,14 @@ from sklearn.metrics import accuracy_score
 import warnings
 import joblib
 import io
+import os
+from dotenv import load_dotenv
+load_dotenv()    
+from dotenv import load_dotenv
+
+# --- SUPABASE ---
+from supabase import create_client, Client
+
 warnings.filterwarnings('ignore')
 
 # =========================================================
@@ -122,317 +129,114 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
-# DATABASE SQLITE
+# SUPABASE CONNECTION
 # =========================================================
-DB_PATH = "crypto_bot.db"
+@st.cache_resource
+def get_supabase() -> Client:
+    # Coba dari environment (lokal)
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    
+    # Jika tidak ada, coba dari st.secrets (cloud)
+    if not url or not key:
+        try:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+        except:
+            st.error("❌ SUPABASE_URL atau SUPABASE_KEY tidak ditemukan di .env atau secrets.toml")
+            st.stop()
+    
+    return create_client(url, key)
+# =========================================================
+# DATABASE FUNCTIONS (SUPABASE)
+# =========================================================
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-def init_db():
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS watchlist (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT UNIQUE,
-            added_at TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS coins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT UNIQUE NOT NULL,
-            name TEXT,
-            category TEXT,
-            active INTEGER DEFAULT 1,
-            created_at TIMESTAMP,
-            updated_at TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS signal_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            signal TEXT,
-            entry_price REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            trend_1h TEXT,
-            trend_15m TEXT,
-            score REAL,
-            confidence REAL,
-            ai_signal TEXT,
-            smart_money_score REAL,
-            timestamp TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            type TEXT,
-            entry_price REAL,
-            stop_loss REAL,
-            take_profit REAL,
-            position_size REAL,
-            leverage INTEGER,
-            score REAL,
-            confidence REAL,
-            signal TEXT,
-            status TEXT,
-            profit_pct REAL,
-            exit_price REAL,
-            entry_time TIMESTAMP,
-            exit_time TIMESTAMP,
-            smart_money_score REAL,
-            ai_score REAL,
-            predicted_signal INTEGER,
-            feedback_used INTEGER DEFAULT 0
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS performance (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            key TEXT UNIQUE,
-            value TEXT,
-            updated_at TIMESTAMP
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS daily_stats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT UNIQUE,
-            total_signals INTEGER,
-            wins INTEGER,
-            losses INTEGER,
-            profit REAL,
-            win_rate REAL
-        )
-    ''')
-    
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ml_predictions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            symbol TEXT,
-            prediction INTEGER,
-            confidence REAL,
-            buy_prob REAL,
-            sell_prob REAL,
-            hold_prob REAL,
-            timestamp TIMESTAMP
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-
-def migrate_db():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("PRAGMA table_info(trades)")
-    columns = [col[1] for col in cursor.fetchall()]
-    if 'smart_money_score' not in columns:
-        cursor.execute("ALTER TABLE trades ADD COLUMN smart_money_score REAL")
-    if 'ai_score' not in columns:
-        cursor.execute("ALTER TABLE trades ADD COLUMN ai_score REAL")
-    if 'exit_price' not in columns:
-        cursor.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
-    if 'predicted_signal' not in columns:
-        cursor.execute("ALTER TABLE trades ADD COLUMN predicted_signal INTEGER")
-    if 'feedback_used' not in columns:
-        cursor.execute("ALTER TABLE trades ADD COLUMN feedback_used INTEGER DEFAULT 0")
-    conn.commit()
-    conn.close()
-
-# ==================== WATCHLIST & COINS ====================
+# --- WATCHLIST ---
 def get_watchlist():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT symbol FROM watchlist ORDER BY added_at")
-    rows = cursor.fetchall()
-    conn.close()
-    return [row['symbol'] for row in rows] if rows else ["BTC"]
+    supabase = get_supabase()
+    res = supabase.table("watchlist").select("symbol").order("added_at").execute()
+    return [row["symbol"] for row in res.data] if res.data else ["BTC"]
 
 def add_coin(symbol):
-    conn = get_db()
-    cursor = conn.cursor()
+    supabase = get_supabase()
     try:
-        cursor.execute(
-            "INSERT INTO watchlist (symbol, added_at) VALUES (?, ?)",
-            (symbol.upper(), datetime.now())
-        )
-        conn.commit()
-        conn.close()
+        supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
         return True
-    except sqlite3.IntegrityError:
-        conn.close()
+    except:
         return False
 
 def remove_coin(symbol):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM watchlist WHERE symbol = ?", (symbol.upper(),))
-    affected = cursor.rowcount
-    conn.commit()
-    conn.close()
-    return affected > 0
+    supabase = get_supabase()
+    res = supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
+    return len(res.data) > 0
 
-# ==================== SIGNAL HISTORY ====================
-def save_signal(signal_data):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO signal_history (
-            symbol, signal, entry_price, stop_loss, take_profit,
-            trend_1h, trend_15m, score, confidence, ai_signal, smart_money_score, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        signal_data.get('symbol'),
-        signal_data.get('signal'),
-        signal_data.get('entry_price'),
-        signal_data.get('stop_loss'),
-        signal_data.get('take_profit'),
-        signal_data.get('trend_1h'),
-        signal_data.get('trend_15m'),
-        signal_data.get('score', 0),
-        signal_data.get('confidence', 0),
-        signal_data.get('ai_signal'),
-        signal_data.get('smart_money_score', 0),
-        datetime.now()
-    ))
-    conn.commit()
-    conn.close()
+# --- SIGNAL HISTORY ---
+def save_signal(data):
+    supabase = get_supabase()
+    data["timestamp"] = datetime.now().isoformat()
+    supabase.table("signal_history").insert(data).execute()
     return True
 
 def get_signal_history(limit=100):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM signal_history ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    supabase = get_supabase()
+    res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
+    return res.data
 
-# ==================== TRADES ====================
-def save_trade(trade_data):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO trades (
-            symbol, type, entry_price, stop_loss, take_profit,
-            position_size, leverage, score, confidence, signal,
-            status, entry_time, smart_money_score, ai_score, predicted_signal, feedback_used
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        trade_data.get('symbol'),
-        trade_data.get('type'),
-        trade_data.get('entry_price'),
-        trade_data.get('stop_loss'),
-        trade_data.get('take_profit'),
-        trade_data.get('position_size', 100),
-        trade_data.get('leverage', 10),
-        trade_data.get('score', 0),
-        trade_data.get('confidence', 0),
-        trade_data.get('signal'),
-        trade_data.get('status', 'OPEN'),
-        trade_data.get('entry_time', datetime.now()),
-        trade_data.get('smart_money_score', 0),
-        trade_data.get('ai_score', 0),
-        trade_data.get('predicted_signal', 0),
-        trade_data.get('feedback_used', 0)
-    ))
-    conn.commit()
-    conn.close()
+# --- TRADES ---
+def save_trade(data):
+    supabase = get_supabase()
+    data["entry_time"] = datetime.now().isoformat()
+    data["status"] = "OPEN"
+    res = supabase.table("trades").insert(data).execute()
+    if res.data:
+        data["id"] = res.data[0]["id"]
     return True
 
 def get_trades(limit=100):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+    supabase = get_supabase()
+    res = supabase.table("trades").select("*").order("entry_time", desc=True).limit(limit).execute()
+    return res.data
 
 def update_trade(trade_id, updates):
-    conn = get_db()
-    cursor = conn.cursor()
-    set_clause = ", ".join([f"{k} = ?" for k in updates.keys()])
-    values = list(updates.values()) + [trade_id]
-    cursor.execute(f"UPDATE trades SET {set_clause} WHERE id = ?", values)
-    conn.commit()
-    conn.close()
+    supabase = get_supabase()
+    supabase.table("trades").update(updates).eq("id", trade_id).execute()
     return True
 
-# ==================== PERFORMANCE ====================
+# --- PERFORMANCE ---
 def update_performance(stats):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO performance (key, value, updated_at) VALUES (?, ?, ?)",
-        ("performance_stats", json.dumps(stats), datetime.now())
-    )
-    conn.commit()
-    conn.close()
+    supabase = get_supabase()
+    supabase.table("performance").upsert({
+        "key": "performance_stats",
+        "value": stats,
+        "updated_at": datetime.now().isoformat()
+    }).execute()
     return True
 
 def get_performance():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM performance WHERE key = 'performance_stats'")
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return json.loads(row['value'])
+    supabase = get_supabase()
+    res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
+    if res.data:
+        return res.data[0]["value"]
     return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
 
-# ==================== DAILY STATS ====================
+# --- DAILY STATS ---
 def save_daily_stats(stats):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO daily_stats (date, total_signals, wins, losses, profit, win_rate) VALUES (?, ?, ?, ?, ?, ?)",
-        (stats['date'], stats['total_signals'], stats['wins'], stats['losses'], stats['profit'], stats['win_rate'])
-    )
-    conn.commit()
-    conn.close()
+    supabase = get_supabase()
+    supabase.table("daily_stats").upsert(stats).execute()
 
-# ==================== ML PREDICTIONS ====================
-def save_prediction(pred_data):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO ml_predictions (symbol, prediction, confidence, buy_prob, sell_prob, hold_prob, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        pred_data.get('symbol'),
-        pred_data.get('prediction'),
-        pred_data.get('confidence'),
-        pred_data.get('buy_prob', 0),
-        pred_data.get('sell_prob', 0),
-        pred_data.get('hold_prob', 0),
-        datetime.now()
-    ))
-    conn.commit()
-    conn.close()
+# --- ML PREDICTIONS ---
+def save_prediction(data):
+    supabase = get_supabase()
+    data["timestamp"] = datetime.now().isoformat()
+    supabase.table("ml_predictions").insert(data).execute()
 
 def get_predictions(symbol=None, limit=50):
-    conn = get_db()
-    cursor = conn.cursor()
+    supabase = get_supabase()
+    query = supabase.table("ml_predictions").select("*")
     if symbol:
-        cursor.execute("SELECT * FROM ml_predictions WHERE symbol = ? ORDER BY timestamp DESC LIMIT ?", (symbol, limit))
-    else:
-        cursor.execute("SELECT * FROM ml_predictions ORDER BY timestamp DESC LIMIT ?", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+        query = query.eq("symbol", symbol)
+    res = query.order("timestamp", desc=True).limit(limit).execute()
+    return res.data
 
 # =========================================================
 # TELEGRAM FUNCTIONS
@@ -450,7 +254,7 @@ def send_telegram(message):
 # =========================================================
 # USD TO IDR
 # =========================================================
-@st.cache_data(ttl=3600 , show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_usd_idr():
     try:
         url = "https://open.er-api.com/v6/latest/USD"
@@ -483,7 +287,7 @@ def format_percentage(value):
     return f"{value:.1f}%"
 
 # =========================================================
-# GET DATA
+# GET DATA (YAHOO FINANCE)
 # =========================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def get_data(symbol, interval, period):
@@ -680,7 +484,7 @@ def calculate_smart_money_score(df, lookback=20):
     return {'score': score, 'reasons': reasons}
 
 # =========================================================
-# AI PREDICTOR (DENGAN RETRAINING PERIODIK)
+# AI PREDICTOR (DENGAN SUPABASE UNTUK MENYIMPAN MODEL)
 # =========================================================
 class AIPredictor:
     def __init__(self):
@@ -768,26 +572,21 @@ class AIPredictor:
             buf = io.BytesIO()
             joblib.dump(model_data, buf)
             buf.seek(0)
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO performance (key, value, updated_at)
-                VALUES ('ml_model', ?, ?)
-            ''', (buf.read(), datetime.now()))
-            conn.commit()
-            conn.close()
+            supabase = get_supabase()
+            supabase.table("performance").upsert({
+                "key": "ml_model",
+                "value": {"binary": list(buf.read())}
+            }).execute()
         except Exception as e:
             st.warning(f"Gagal simpan model: {e}")
 
     def _load_model(self):
         try:
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT value FROM performance WHERE key = 'ml_model'")
-            row = cursor.fetchone()
-            conn.close()
-            if row:
-                buf = io.BytesIO(row['value'])
+            supabase = get_supabase()
+            res = supabase.table("performance").select("value").eq("key", "ml_model").execute()
+            if res.data and "value" in res.data[0]:
+                binary_data = bytes(res.data[0]["value"]["binary"])
+                buf = io.BytesIO(binary_data)
                 model_data = joblib.load(buf)
                 self.model_rf = model_data['rf']
                 self.model_gb = model_data['gb']
@@ -841,21 +640,19 @@ class AIPredictor:
         }
 
     def update_with_feedback(self, symbol, actual_signal, profit_pct):
-        # Simpan feedback untuk retraining periodik
         self.trade_feedback.append({
             'symbol': symbol,
             'actual_signal': actual_signal,
             'profit_pct': profit_pct,
             'time': datetime.now()
         })
-        if len(self.trade_feedback) >= 50:  # threshold
+        if len(self.trade_feedback) >= 50:
             self._retrain_with_feedback()
         return True
 
     def _retrain_with_feedback(self):
         if len(self.trade_feedback) < 20:
             return
-        # Ambil data dari beberapa simbol di watchlist (maks 5)
         symbols = get_watchlist()[:5]
         all_dfs = []
         for sym in symbols:
@@ -937,10 +734,9 @@ def analyze_trend(df, timeframe_name):
         return "🟡 SIDEWAYS"
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME (DENGAN 4H & 1D, MACD, STOCH, VOLUME)
+# ANALISIS MULTI TIMEFRAME
 # =========================================================
 def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
-    # Get data
     df_1h = get_data_safe(symbol, "1h", min_candles=30)
     if df_1h is None:
         return None
@@ -957,14 +753,12 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     if df_1d is None:
         df_1d = df_4h.copy()
 
-    # Trends
     trend_1h = analyze_trend(df_1h, "1H")
     trend_15m = analyze_trend(df_15m, "15M")
     trend_5m = analyze_trend(df_5m, "5M")
     trend_4h = analyze_trend(df_4h, "4H")
     trend_1d = analyze_trend(df_1d, "1D")
 
-    # Helper to get last MACD and StochRSI values
     def get_last_macd_stoch(df):
         if df is None or len(df) < 20:
             return 0, 0, 0, 0, 0
@@ -982,13 +776,10 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     macd_4h, sig_4h, hist_4h, stoch_k_4h, stoch_d_4h = get_last_macd_stoch(df_4h)
     macd_1d, sig_1d, hist_1d, stoch_k_1d, stoch_d_1d = get_last_macd_stoch(df_1d)
 
-    # Volume ratio (5m)
     vol = df_5m["Volume"].iloc[-1]
     vol_ma = df_5m["Volume"].rolling(10).mean().iloc[-1] if len(df_5m) >= 10 else vol
     volume_ratio = vol / vol_ma if vol_ma > 0 else 1.0
 
-    # ---------- Existing logic for BB, support/resistance, signal ----------
-    # (copy dari kode sebelumnya)
     df_15m["RSI"] = RSI(df_15m, 14)
     df_15m["MACD"], df_15m["MACD_SIGNAL"], df_15m["MACD_HIST"] = MACD(df_15m)
     df_15m["STOCH_K"], df_15m["STOCH_D"] = StochasticRSI(df_15m)
@@ -1165,7 +956,7 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     }
 
 # =========================================================
-# CREATE CHART (sama seperti sebelumnya)
+# CREATE CHART
 # =========================================================
 def create_chart(result, symbol):
     fig = make_subplots(
@@ -1500,10 +1291,6 @@ def evaluate_ai_performance():
 # =========================================================
 # INITIALIZATION
 # =========================================================
-init_db()
-migrate_db()
-
-# Session State
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = get_watchlist()
 
@@ -1535,7 +1322,7 @@ with st.sidebar:
     st.header("⚙️ Settings")
     
     st.subheader("📋 Watchlist")
-    st.success("✅ SQLite Connected")
+    st.success("☁️ Supabase Connected")
     
     col_add1, col_add2 = st.columns([3, 1])
     with col_add1:
@@ -1592,7 +1379,7 @@ with st.sidebar:
     
     st.subheader("📊 Status")
     st.metric("Total Coins", len(st.session_state.watchlist))
-    st.metric("Storage", "✅ SQLite")
+    st.metric("Storage", "☁️ Supabase")
     st.metric("Pending Signals", len(st.session_state.pending_signal))
     stats = get_performance()
     st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
@@ -1677,7 +1464,6 @@ with tab1:
                     msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                     send_telegram(msg)
             
-            # Build row dengan tambahan kolom
             all_signals.append({
                 "Coin": symbol,
                 "Trend 1D": result.get("trend_1d", ""),
@@ -1704,7 +1490,6 @@ with tab1:
     
     if all_signals:
         df_signals = pd.DataFrame(all_signals)
-        # Urutkan berdasarkan Score (tertinggi)
         df_signals['Score_num'] = df_signals['Score'].astype(float)
         df_signals = df_signals.sort_values('Score_num', ascending=False).drop(columns=['Score_num'])
         st.dataframe(df_signals, use_container_width=True, hide_index=True)
@@ -1941,5 +1726,5 @@ st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1D, 4H, 1H, 15M, 5M  
 📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
 🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
-💾 Database: SQLite | 🤖 AI: Ensemble (RF+GBM+SGD) + Online Learning
+💾 Database: Supabase PostgreSQL | 🤖 AI: Ensemble (RF+GBM+SGD) + Online Learning
 """)
