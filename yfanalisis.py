@@ -21,7 +21,7 @@ import io
 import os
 # from dotenv import load_dotenv
 # load_dotenv()    
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 # --- SUPABASE ---
 from supabase import create_client, Client
