@@ -204,20 +204,30 @@ def update_trade(trade_id, updates):
 
 # --- PERFORMANCE ---
 def update_performance(stats):
-    supabase = get_supabase()
-    supabase.table("performance").upsert({
-        "key": "performance_stats",
-        "value": stats,
-        "updated_at": datetime.now().isoformat()
-    }).execute()
-    return True
+    try:
+        supabase = get_supabase()
+        supabase.table("performance").upsert(
+            {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()}
+        ).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal update performance: {e}")
+        return False
 
 def get_performance():
-    supabase = get_supabase()
-    res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
-    if res.data:
-        return res.data[0]["value"]
-    return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+    try:
+        supabase = get_supabase()
+        res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
+        if res.data:
+            return res.data[0]["value"]
+        else:
+            # Data belum ada, buat default
+            default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+            supabase.table("performance").insert({"key": "performance_stats", "value": default}).execute()
+            return default
+    except Exception as e:
+        st.warning(f"⚠️ Gagal baca performance: {e}")
+        return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
 
 # --- DAILY STATS ---
 def save_daily_stats(stats):
