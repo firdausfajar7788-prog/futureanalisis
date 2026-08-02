@@ -450,7 +450,7 @@ def send_telegram(message):
 # =========================================================
 # USD TO IDR
 # =========================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600 , show_spinner=False)
 def get_usd_idr():
     try:
         url = "https://open.er-api.com/v6/latest/USD"
@@ -485,7 +485,7 @@ def format_percentage(value):
 # =========================================================
 # GET DATA
 # =========================================================
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_data(symbol, interval, period):
     try:
         ticker = f"{symbol}-USD"
