@@ -19,8 +19,8 @@ import warnings
 import joblib
 import io
 import os
-from dotenv import load_dotenv
-load_dotenv()    
+# from dotenv import load_dotenv
+# load_dotenv()    
 from dotenv import load_dotenv
 
 # --- SUPABASE ---
