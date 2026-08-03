@@ -132,32 +132,66 @@ st.markdown("""
 # SUPABASE CONNECTION
 # =========================================================
 @st.cache_resource
-def get_supabase() -> Client:
-    # Coba dari environment (lokal)
+def get_supabase():
+
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
-    
-    # Jika tidak ada, coba dari st.secrets (cloud)
-    if not url or not key:
+
+    if not url:
+        url = st.secrets.get("SUPABASE_URL")
+
+    if not key:
+        key = st.secrets.get("SUPABASE_KEY")
+
+    if not url:
         try:
             url = st.secrets["supabase"]["url"]
+        except:
+            pass
+
+    if not key:
+        try:
             key = st.secrets["supabase"]["key"]
         except:
-            st.error("❌ SUPABASE_URL atau SUPABASE_KEY tidak ditemukan di .env atau secrets.toml")
-            st.stop()
-    
+            pass
+
+    if not url or not key:
+        raise Exception("SUPABASE_URL atau SUPABASE_KEY belum diisi.")
+
     return create_client(url, key)
+
+# =========================================================
+# SAFE SUPABASE REQUEST
+# =========================================================
+def safe_supabase_request(func, default=None):
+    try:
+        return func()
+    except Exception as e:
+        st.error(f"Supabase Error: {e}")
+        return default
 # =========================================================
 # DATABASE FUNCTIONS (SUPABASE)
 # =========================================================
 
 # --- WATCHLIST ---
 def get_watchlist():
+
     def _fetch():
         supabase = get_supabase()
-        res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-        return [row["symbol"] for row in res.data] if res.data else ["BTC"]
-    
+
+        res = (
+            supabase
+            .table("watchlist")
+            .select("symbol")
+            .order("added_at")
+            .execute()
+        )
+
+        if res.data:
+            return [r["symbol"] for r in res.data]
+
+        return ["BTC"]
+
     return safe_supabase_request(_fetch, ["BTC"])
 
 def add_coin(symbol):
@@ -169,9 +203,18 @@ def add_coin(symbol):
         return False
 
 def remove_coin(symbol):
-    supabase = get_supabase()
-    res = supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
-    return len(res.data) > 0
+    try:
+        supabase = get_supabase()
+
+        supabase.table("watchlist")\
+            .delete()\
+            .eq("symbol", symbol.upper())\
+            .execute()
+
+        return True
+
+    except Exception:
+        return False
 
 # --- SIGNAL HISTORY ---
 def save_signal(data):
@@ -185,9 +228,22 @@ def save_signal(data):
         return False
 
 def get_signal_history(limit=100):
-    supabase = get_supabase()
-    res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
-    return res.data
+
+    def _fetch():
+        supabase = get_supabase()
+
+        res = (
+            supabase
+            .table("signal_history")
+            .select("*")
+            .order("timestamp", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        return res.data or []
+
+    return safe_supabase_request(_fetch, [])
 
 # --- TRADES ---
 def save_trade(data):
@@ -204,9 +260,22 @@ def save_trade(data):
         return False
 
 def get_trades(limit=100):
-    supabase = get_supabase()
-    res = supabase.table("trades").select("*").order("entry_time", desc=True).limit(limit).execute()
-    return res.data
+
+    def _fetch():
+        supabase = get_supabase()
+
+        res = (
+            supabase
+            .table("trades")
+            .select("*")
+            .order("entry_time", desc=True)
+            .limit(limit)
+            .execute()
+        )
+
+        return res.data or []
+
+    return safe_supabase_request(_fetch, [])
 
 def update_trade(trade_id, updates):
     supabase = get_supabase()
@@ -254,12 +323,20 @@ def save_prediction(data):
         return False
 
 def get_predictions(symbol=None, limit=50):
-    supabase = get_supabase()
-    query = supabase.table("ml_predictions").select("*")
-    if symbol:
-        query = query.eq("symbol", symbol)
-    res = query.order("timestamp", desc=True).limit(limit).execute()
-    return res.data
+
+    def _fetch():
+        supabase = get_supabase()
+
+        query = supabase.table("ml_predictions").select("*")
+
+        if symbol:
+            query = query.eq("symbol", symbol)
+
+        res = query.order("timestamp", desc=True).limit(limit).execute()
+
+        return res.data or []
+
+    return safe_supabase_request(_fetch, [])
 
 # =========================================================
 # TELEGRAM FUNCTIONS
