@@ -20,8 +20,8 @@ import joblib
 import io
 import os
 from dotenv import load_dotenv
-load_dotenv()    
-from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- SUPABASE ---
 from supabase import create_client, Client
@@ -133,15 +133,8 @@ st.markdown("""
 # =========================================================
 @st.cache_resource
 def get_supabase():
-
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
-
-    if not url:
-        url = st.secrets.get("SUPABASE_URL")
-
-    if not key:
-        key = st.secrets.get("SUPABASE_KEY")
 
     if not url:
         try:
@@ -167,36 +160,26 @@ def safe_supabase_request(func, default=None):
     try:
         return func()
     except Exception as e:
-        st.error(f"Supabase Error: {e}")
+        st.warning(f"Supabase Error: {e}")
         return default
+
 # =========================================================
 # DATABASE FUNCTIONS (SUPABASE)
 # =========================================================
 
 # --- WATCHLIST ---
 def get_watchlist():
-
     def _fetch():
         supabase = get_supabase()
-
-        res = (
-            supabase
-            .table("watchlist")
-            .select("symbol")
-            .order("added_at")
-            .execute()
-        )
-
+        res = supabase.table("watchlist").select("symbol").order("added_at").execute()
         if res.data:
             return [r["symbol"] for r in res.data]
-
         return ["BTC"]
-
     return safe_supabase_request(_fetch, ["BTC"])
 
 def add_coin(symbol):
-    supabase = get_supabase()
     try:
+        supabase = get_supabase()
         supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
         return True
     except:
@@ -205,22 +188,16 @@ def add_coin(symbol):
 def remove_coin(symbol):
     try:
         supabase = get_supabase()
-
-        supabase.table("watchlist")\
-            .delete()\
-            .eq("symbol", symbol.upper())\
-            .execute()
-
+        supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
         return True
-
-    except Exception:
+    except:
         return False
 
 # --- SIGNAL HISTORY ---
 def save_signal(data):
     try:
         supabase = get_supabase()
-        data["timestamp"] = datetime.now().isoformat()  # ✅
+        data["timestamp"] = datetime.now().isoformat()
         supabase.table("signal_history").insert(data).execute()
         return True
     except Exception as e:
@@ -228,28 +205,17 @@ def save_signal(data):
         return False
 
 def get_signal_history(limit=100):
-
     def _fetch():
         supabase = get_supabase()
-
-        res = (
-            supabase
-            .table("signal_history")
-            .select("*")
-            .order("timestamp", desc=True)
-            .limit(limit)
-            .execute()
-        )
-
+        res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
         return res.data or []
-
     return safe_supabase_request(_fetch, [])
 
 # --- TRADES ---
 def save_trade(data):
     try:
         supabase = get_supabase()
-        data["entry_time"] = datetime.now().isoformat()  # ✅
+        data["entry_time"] = datetime.now().isoformat()
         data["status"] = "OPEN"
         res = supabase.table("trades").insert(data).execute()
         if res.data:
@@ -260,27 +226,20 @@ def save_trade(data):
         return False
 
 def get_trades(limit=100):
-
     def _fetch():
         supabase = get_supabase()
-
-        res = (
-            supabase
-            .table("trades")
-            .select("*")
-            .order("entry_time", desc=True)
-            .limit(limit)
-            .execute()
-        )
-
+        res = supabase.table("trades").select("*").order("entry_time", desc=True).limit(limit).execute()
         return res.data or []
-
     return safe_supabase_request(_fetch, [])
 
 def update_trade(trade_id, updates):
-    supabase = get_supabase()
-    supabase.table("trades").update(updates).eq("id", trade_id).execute()
-    return True
+    try:
+        supabase = get_supabase()
+        supabase.table("trades").update(updates).eq("id", trade_id).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal update trade: {e}")
+        return False
 
 # --- PERFORMANCE ---
 def update_performance(stats):
@@ -289,7 +248,7 @@ def update_performance(stats):
         supabase.table("performance").upsert({
             "key": "performance_stats",
             "value": stats,
-            "updated_at": datetime.now().isoformat()  # ✅
+            "updated_at": datetime.now().isoformat()
         }).execute()
         return True
     except Exception as e:
@@ -303,19 +262,22 @@ def get_performance():
         if res.data:
             return res.data[0]["value"]
         return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
-    
     return safe_supabase_request(_fetch, {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0})
 
 # --- DAILY STATS ---
 def save_daily_stats(stats):
-    supabase = get_supabase()
-    supabase.table("daily_stats").upsert(stats).execute()
+    try:
+        supabase = get_supabase()
+        supabase.table("daily_stats").upsert(stats).execute()
+        return True
+    except:
+        return False
 
 # --- ML PREDICTIONS ---
 def save_prediction(data):
     try:
         supabase = get_supabase()
-        data["timestamp"] = datetime.now().isoformat()  # ✅
+        data["timestamp"] = datetime.now().isoformat()
         supabase.table("ml_predictions").insert(data).execute()
         return True
     except Exception as e:
@@ -323,19 +285,13 @@ def save_prediction(data):
         return False
 
 def get_predictions(symbol=None, limit=50):
-
     def _fetch():
         supabase = get_supabase()
-
         query = supabase.table("ml_predictions").select("*")
-
         if symbol:
             query = query.eq("symbol", symbol)
-
         res = query.order("timestamp", desc=True).limit(limit).execute()
-
         return res.data or []
-
     return safe_supabase_request(_fetch, [])
 
 # =========================================================
@@ -584,7 +540,7 @@ def calculate_smart_money_score(df, lookback=20):
     return {'score': score, 'reasons': reasons}
 
 # =========================================================
-# AI PREDICTOR (DENGAN SUPABASE UNTUK MENYIMPAN MODEL)
+# AI PREDICTOR (TANPA PENYIMPANAN MODEL)
 # =========================================================
 class AIPredictor:
     def __init__(self):
@@ -594,8 +550,6 @@ class AIPredictor:
         self.scaler = StandardScaler()
         self.is_trained = False
         self.features = []
-        self.version = 1
-        self.trade_feedback = []
 
     def _extract_features(self, df):
         features = pd.DataFrame()
@@ -633,7 +587,7 @@ class AIPredictor:
         self.features = features.columns.tolist()
         return features
 
-    def train(self, df, force_retrain=False):
+    def train(self, df):
         if len(df) < 150:
             return False
         features = self._extract_features(df)
@@ -655,58 +609,12 @@ class AIPredictor:
         self.model_gb.fit(X_scaled, y)
         self.model_sgd.fit(X_scaled, y)
         self.is_trained = True
-        self.version += 1
-        self._save_model()
         return True
-
-    def _save_model(self):
-        try:
-            model_data = {
-                'rf': self.model_rf,
-                'gb': self.model_gb,
-                'sgd': self.model_sgd,
-                'scaler': self.scaler,
-                'features': self.features,
-                'version': self.version
-            }
-            buf = io.BytesIO()
-            joblib.dump(model_data, buf)
-            buf.seek(0)
-            supabase = get_supabase()
-            supabase.table("performance").upsert({
-                "key": "ml_model",
-                "value": {"binary": list(buf.read())}
-            }).execute()
-        except Exception as e:
-            st.warning(f"Gagal simpan model: {e}")
-
-    def _load_model(self):
-        try:
-            supabase = get_supabase()
-            res = supabase.table("performance").select("value").eq("key", "ml_model").execute()
-            if res.data and "value" in res.data[0]:
-                binary_data = bytes(res.data[0]["value"]["binary"])
-                buf = io.BytesIO(binary_data)
-                model_data = joblib.load(buf)
-                self.model_rf = model_data['rf']
-                self.model_gb = model_data['gb']
-                self.model_sgd = model_data['sgd']
-                self.scaler = model_data['scaler']
-                self.features = model_data['features']
-                self.version = model_data.get('version', 1)
-                self.is_trained = True
-                return True
-        except:
-            pass
-        return False
 
     def predict(self, df):
         default = {'signal': 0, 'confidence': 0, 'buy_prob': 0, 'sell_prob': 0, 'hold_prob': 100}
         if not self.is_trained or len(df) < 50:
             return default
-        if self.model_rf is None:
-            if not self._load_model():
-                return default
         features = self._extract_features(df)
         if features.empty:
             return default
@@ -739,34 +647,24 @@ class AIPredictor:
             'ensemble_votes': votes
         }
 
-    def update_with_feedback(self, symbol, actual_signal, profit_pct):
-        self.trade_feedback.append({
-            'symbol': symbol,
-            'actual_signal': actual_signal,
-            'profit_pct': profit_pct,
-            'time': datetime.now()
-        })
-        if len(self.trade_feedback) >= 50:
-            self._retrain_with_feedback()
-        return True
-
-    def _retrain_with_feedback(self):
-        if len(self.trade_feedback) < 20:
-            return
-        symbols = get_watchlist()[:5]
-        all_dfs = []
-        for sym in symbols:
-            df = get_data_safe(sym, "15m", min_candles=200)
-            if df is not None and len(df) > 100:
-                all_dfs.append(df)
-        if not all_dfs:
-            return
-        combined_df = pd.concat(all_dfs, ignore_index=True)
-        if len(combined_df) < 500:
-            return
-        self.train(combined_df, force_retrain=True)
-        self.trade_feedback = []
-        st.success("🔄 AI model retrained with latest market data!")
+# =========================================================
+# INITIALIZE AI PREDICTOR (TRAIN SEKALI SAAT STARTUP)
+# =========================================================
+@st.cache_resource
+def get_ai_predictor():
+    """Train AI model sekali dan cache untuk seluruh sesi."""
+    predictor = AIPredictor()
+    
+    # Ambil data BTC untuk training
+    with st.spinner("🤖 Training AI model..."):
+        df = get_data_safe("BTC", "15m", min_candles=200)
+        if df is not None and len(df) > 150:
+            predictor.train(df)
+            st.success("✅ AI Model trained with BTC data!")
+        else:
+            st.warning("⚠️ Gagal train AI model, menggunakan default.")
+    
+    return predictor
 
 # =========================================================
 # FUNGSI UNTUK AI SAFE
@@ -776,15 +674,13 @@ _predictor = None
 def get_predictor():
     global _predictor
     if _predictor is None:
-        _predictor = AIPredictor()
+        _predictor = get_ai_predictor()
     return _predictor
 
 def safe_ai_score(df):
     default = {'score': 50, 'signal_text': '🟡 HOLD', 'confidence': 0, 'buy_prob': 0, 'sell_prob': 0, 'hold_prob': 100}
     try:
         predictor = get_predictor()
-        if not predictor.is_trained:
-            predictor.train(df)
         pred = predictor.predict(df)
         if pred['signal'] == 1:
             score = 50 + pred['buy_prob'] * 0.5
@@ -1272,12 +1168,6 @@ def monitor_positions():
             # ✅ Update dengan updates yang sudah bersih
             update_trade(trade['id'], updates)
             
-            predictor = get_predictor()
-            if predictor.is_trained and trade.get('feedback_used', 0) == 0:
-                original_signal = 1 if trade['type'] == 'BUY' else 2
-                predictor.update_with_feedback(symbol, original_signal, profit_pct)
-                update_trade(trade['id'], {'feedback_used': 1})
-            
             msg = f"{'✅' if profit_pct > 0 else '❌'} {symbol} Closed: {profit_pct:.2f}%"
             send_telegram(msg)
 
@@ -1665,9 +1555,10 @@ with tab3:
         if not df.empty:
             predictor = get_predictor()
             if not predictor.is_trained:
-                predictor.train(df)
-                if predictor.is_trained:
-                    st.success("✅ AI Model Trained!")
+                with st.spinner("🤖 Training AI model..."):
+                    predictor.train(df)
+                    if predictor.is_trained:
+                        st.success("✅ AI Model Trained!")
             
             result = analyze_mtf(ai_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
             
