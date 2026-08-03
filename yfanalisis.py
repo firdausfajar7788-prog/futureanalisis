@@ -153,9 +153,12 @@ def get_supabase() -> Client:
 
 # --- WATCHLIST ---
 def get_watchlist():
-    supabase = get_supabase()
-    res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-    return [row["symbol"] for row in res.data] if res.data else ["BTC"]
+    def _fetch():
+        supabase = get_supabase()
+        res = supabase.table("watchlist").select("symbol").order("added_at").execute()
+        return [row["symbol"] for row in res.data] if res.data else ["BTC"]
+    
+    return safe_supabase_request(_fetch, ["BTC"])
 
 def add_coin(symbol):
     supabase = get_supabase()
@@ -225,11 +228,14 @@ def update_performance(stats):
         return False
 
 def get_performance():
-    supabase = get_supabase()
-    res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
-    if res.data:
-        return res.data[0]["value"]
-    return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+    def _fetch():
+        supabase = get_supabase()
+        res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
+        if res.data:
+            return res.data[0]["value"]
+        return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+    
+    return safe_supabase_request(_fetch, {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0})
 
 # --- DAILY STATS ---
 def save_daily_stats(stats):
