@@ -172,10 +172,14 @@ def remove_coin(symbol):
 
 # --- SIGNAL HISTORY ---
 def save_signal(data):
-    supabase = get_supabase()
-    data["timestamp"] = datetime.now().isoformat()
-    supabase.table("signal_history").insert(data).execute()
-    return True
+    try:
+        supabase = get_supabase()
+        data["timestamp"] = datetime.now().isoformat()  # ✅
+        supabase.table("signal_history").insert(data).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal simpan signal: {e}")
+        return False
 
 def get_signal_history(limit=100):
     supabase = get_supabase()
@@ -184,13 +188,17 @@ def get_signal_history(limit=100):
 
 # --- TRADES ---
 def save_trade(data):
-    supabase = get_supabase()
-    data["entry_time"] = datetime.now().isoformat()
-    data["status"] = "OPEN"
-    res = supabase.table("trades").insert(data).execute()
-    if res.data:
-        data["id"] = res.data[0]["id"]
-    return True
+    try:
+        supabase = get_supabase()
+        data["entry_time"] = datetime.now().isoformat()  # ✅
+        data["status"] = "OPEN"
+        res = supabase.table("trades").insert(data).execute()
+        if res.data:
+            data["id"] = res.data[0]["id"]
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal simpan trade: {e}")
+        return False
 
 def get_trades(limit=100):
     supabase = get_supabase()
@@ -204,13 +212,17 @@ def update_trade(trade_id, updates):
 
 # --- PERFORMANCE ---
 def update_performance(stats):
-    supabase = get_supabase()
-    supabase.table("performance").upsert({
-        "key": "performance_stats",
-        "value": stats,
-        "updated_at": datetime.now().isoformat()
-    }).execute()
-    return True
+    try:
+        supabase = get_supabase()
+        supabase.table("performance").upsert({
+            "key": "performance_stats",
+            "value": stats,
+            "updated_at": datetime.now().isoformat()  # ✅
+        }).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal update performance: {e}")
+        return False
 
 def get_performance():
     supabase = get_supabase()
@@ -226,9 +238,14 @@ def save_daily_stats(stats):
 
 # --- ML PREDICTIONS ---
 def save_prediction(data):
-    supabase = get_supabase()
-    data["timestamp"] = datetime.now().isoformat()
-    supabase.table("ml_predictions").insert(data).execute()
+    try:
+        supabase = get_supabase()
+        data["timestamp"] = datetime.now().isoformat()  # ✅
+        supabase.table("ml_predictions").insert(data).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ Gagal simpan prediction: {e}")
+        return False
 
 def get_predictions(symbol=None, limit=50):
     supabase = get_supabase()
@@ -1161,11 +1178,16 @@ def monitor_positions():
                 closed = True
         
         if closed:
-            trade['status'] = 'CLOSED'
-            trade['exit_price'] = exit_price
-            trade['profit_pct'] = profit_pct
-            trade['exit_time'] = datetime.now()
-            update_trade(trade['id'], trade)
+            # ✅ Buat dictionary update dengan semua nilai yang sudah dikonversi
+            updates = {
+                'status': 'CLOSED',
+                'exit_price': exit_price,
+                'profit_pct': profit_pct,
+                'exit_time': datetime.now().isoformat()  # ✅ string ISO
+            }
+            
+            # ✅ Update dengan updates yang sudah bersih
+            update_trade(trade['id'], updates)
             
             predictor = get_predictor()
             if predictor.is_trained and trade.get('feedback_used', 0) == 0:
