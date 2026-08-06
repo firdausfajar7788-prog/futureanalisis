@@ -1417,7 +1417,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 ])
 
 # ==================== TAB 1: SCANNER ====================
-with tab1:
+ with tab1:
     st.subheader("📊 Signal Summary")
     
     current_time = datetime.now()
@@ -1435,117 +1435,157 @@ with tab1:
     status_text = st.empty()
     
     for idx, symbol in enumerate(st.session_state.watchlist[:20]):
-    progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:20]))
-    status_text.text(f"🔄 Scanning {symbol}...")
-    
-    try:
-        result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
-    except Exception as e:
-        st.error(f"⚠️ Error scanning {symbol}: {e}")
-        all_signals.append({
-            "Coin": symbol,
-            "Trend 1D": "❌ ERROR",
-            "Trend 4H": "",
-            "Trend 1H": "",
-            "Trend 15M": "",
-            "Trend 5M": "",
-            "Signal": "⏳ ERROR",
-            "Score": "0",
-            "MACD 4H": "",
-            "MACD 1H": "",
-            "MACD 15M": "",
-            "Stoch 4H": "",
-            "Stoch 1H": "",
-            "Stoch 15M": "",
-            "AI": "",
-            "SM Score": "",
-            "Confirm": ""
-        })
-        continue
-    
-    if result:
-        pending = st.session_state.pending_signal.get(symbol)
-        if pending:
-            entry_display = pending["signal"]
-            is_pending = True
-        else:
-            entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
-            is_pending = False
+        progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:20]))
+        status_text.text(f"🔄 Scanning {symbol}...")
         
-        if result["entry_signal"] and "WAIT" not in result["entry_signal"] and symbol not in st.session_state.pending_signal:
-            st.session_state.pending_signal[symbol] = {
-                "signal": result["entry_signal"],
-                "time": datetime.now(),
-                "entry": result["entry_price"],
-                "sl": result["stop_loss"],
-                "tp": result["take_profit"]
-            }
-            
-            save_signal({
-                'symbol': symbol,
-                'signal': result["entry_signal"],
-                'entry_price': result["entry_price"],
-                'stop_loss': result["stop_loss"],
-                'take_profit': result["take_profit"],
-                'trend_1h': result["trend_1h"],
-                'trend_15m': result["trend_15m"],
-                'score': result['total_score'],
-                'confidence': result.get('confirmations', 1) / 3 * 100,
-                'ai_signal': result['ai']['signal_text'],
-                'smart_money_score': result['smart_money']['score']
+        try:
+            result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
+        except Exception as e:
+            st.error(f"⚠️ Error scanning {symbol}: {e}")
+            all_signals.append({
+                "Coin": symbol,
+                "Trend 1D": "❌ ERROR",
+                "Trend 4H": "",
+                "Trend 1H": "",
+                "Trend 15M": "",
+                "Trend 5M": "",
+                "Signal": "⏳ ERROR",
+                "Score": "0",
+                "MACD 4H": "",
+                "MACD 1H": "",
+                "MACD 15M": "",
+                "Stoch 4H": "",
+                "Stoch 1H": "",
+                "Stoch 15M": "",
+                "AI": "",
+                "SM Score": "",
+                "Confirm": ""
             })
-            
-            stats = get_performance()
-            stats['total_signals'] = stats.get('total_signals', 0) + 1
-            update_performance(stats)
-            
-            if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
-                if result["take_profit"] and result["stop_loss"] and result["entry_price"]:
-                    rr = ((result["take_profit"] / result["entry_price"] - 1) / 
-                          (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
-                    msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    send_telegram(msg)
+            continue
         
-        all_signals.append({
-            "Coin": symbol,
-            "Trend 1D": result.get("trend_1d", ""),
-            "Trend 4H": result.get("trend_4h", ""),
-            "Trend 1H": result["trend_1h"],
-            "Trend 15M": result["trend_15m"],
-            "Trend 5M": result["trend_5m"],
-            "Signal": "🟡 PENDING" if is_pending else entry_display,
-            "Score": f"{result['total_score']:.0f}",
-            "MACD 4H": f"{result.get('macd_4h', 0):.4f}",
-            "MACD 1H": f"{result.get('macd_1h', 0):.4f}",
-            "MACD 15M": f"{result.get('macd_15m', 0):.4f}",
-            "Stoch 4H": f"{result.get('stoch_k_4h', 50):.1f}",
-            "Stoch 1H": f"{result.get('stoch_k_1h', 50):.1f}",
-            "Stoch 15M": f"{result.get('stoch_k_15m', 50):.1f}",
-            "AI": result['ai']['signal_text'],
-            "SM Score": result['smart_money']['score'],
-            "Confirm": f"{result.get('confirmations', 0)}/3"
-        })
+        if result:
+            pending = st.session_state.pending_signal.get(symbol)
+            if pending:
+                entry_display = pending["signal"]
+                is_pending = True
+            else:
+                entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
+                is_pending = False
+            
+            if result["entry_signal"] and "WAIT" not in result["entry_signal"] and symbol not in st.session_state.pending_signal:
+                st.session_state.pending_signal[symbol] = {
+                    "signal": result["entry_signal"],
+                    "time": datetime.now(),
+                    "entry": result["entry_price"],
+                    "sl": result["stop_loss"],
+                    "tp": result["take_profit"]
+                }
+                
+                save_signal({
+                    'symbol': symbol,
+                    'signal': result["entry_signal"],
+                    'entry_price': result["entry_price"],
+                    'stop_loss': result["stop_loss"],
+                    'take_profit': result["take_profit"],
+                    'trend_1h': result["trend_1h"],
+                    'trend_15m': result["trend_15m"],
+                    'score': result['total_score'],
+                    'confidence': result.get('confirmations', 1) / 3 * 100,
+                    'ai_signal': result['ai']['signal_text'],
+                    'smart_money_score': result['smart_money']['score']
+                })
+                
+                stats = get_performance()
+                stats['total_signals'] = stats.get('total_signals', 0) + 1
+                update_performance(stats)
+                
+                if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
+                    if result["take_profit"] and result["stop_loss"] and result["entry_price"]:
+                        rr = ((result["take_profit"] / result["entry_price"] - 1) / 
+                              (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+                        msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        send_telegram(msg)
+            
+            all_signals.append({
+                "Coin": symbol,
+                "Trend 1D": result.get("trend_1d", ""),
+                "Trend 4H": result.get("trend_4h", ""),
+                "Trend 1H": result["trend_1h"],
+                "Trend 15M": result["trend_15m"],
+                "Trend 5M": result["trend_5m"],
+                "Signal": "🟡 PENDING" if is_pending else entry_display,
+                "Score": f"{result['total_score']:.0f}",
+                "MACD 4H": f"{result.get('macd_4h', 0):.4f}",
+                "MACD 1H": f"{result.get('macd_1h', 0):.4f}",
+                "MACD 15M": f"{result.get('macd_15m', 0):.4f}",
+                "Stoch 4H": f"{result.get('stoch_k_4h', 50):.1f}",
+                "Stoch 1H": f"{result.get('stoch_k_1h', 50):.1f}",
+                "Stoch 15M": f"{result.get('stoch_k_15m', 50):.1f}",
+                "AI": result['ai']['signal_text'],
+                "SM Score": result['smart_money']['score'],
+                "Confirm": f"{result.get('confirmations', 0)}/3"
+            })
+        else:
+            all_signals.append({
+                "Coin": symbol,
+                "Trend 1D": "⏳ NO DATA",
+                "Trend 4H": "",
+                "Trend 1H": "",
+                "Trend 15M": "",
+                "Trend 5M": "",
+                "Signal": "⏳ NO DATA",
+                "Score": "0",
+                "MACD 4H": "",
+                "MACD 1H": "",
+                "MACD 15M": "",
+                "Stoch 4H": "",
+                "Stoch 1H": "",
+                "Stoch 15M": "",
+                "AI": "",
+                "SM Score": "",
+                "Confirm": ""
+            })
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if all_signals:
+        df_signals = pd.DataFrame(all_signals)
+        df_signals['Score_num'] = df_signals['Score'].astype(float)
+        df_signals = df_signals.sort_values('Score_num', ascending=False).drop(columns=['Score_num'])
+        st.dataframe(df_signals, use_container_width=True, hide_index=True)
+        
+        best = df_signals.iloc[0]
+        st.success(f"🏆 Best Coin: **{best['Coin']}** | Score: {best['Score']} | {best['Signal']}")
     else:
-        # Jika result None (data tidak cukup)
-        all_signals.append({
-            "Coin": symbol,
-            "Trend 1D": "⏳ NO DATA",
-            "Trend 4H": "",
-            "Trend 1H": "",
-            "Trend 15M": "",
-            "Trend 5M": "",
-            "Signal": "⏳ NO DATA",
-            "Score": "0",
-            "MACD 4H": "",
-            "MACD 1H": "",
-            "MACD 15M": "",
-            "Stoch 4H": "",
-            "Stoch 1H": "",
-            "Stoch 15M": "",
-            "AI": "",
-            "SM Score": "",
-            "Confirm": ""
-        })
+        st.info("ℹ️ Tidak ada data")
+    
+    if st.session_state.pending_signal:
+        st.divider()
+        st.subheader("⏳ Pending Signals (Aktif)")
+        st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit")
+        
+        cols = st.columns(min(len(st.session_state.pending_signal), 4))
+        for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
+            col_idx = idx % len(cols)
+            with cols[col_idx]:
+                elapsed = (datetime.now() - data["time"]).seconds / 60
+                remaining = max(0, hold_minutes - elapsed)
+                if data["entry"] and data["sl"] and data["tp"]:
+                    rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
+                else:
+                    rr = 0
+                st.markdown(f"""
+                <div class="pending-signal">
+                    <b>{symbol}</b><br>
+                    {data['signal']}<br>
+                    Entry: {format_price(data['entry'])}<br>
+                    SL: {format_price(data['sl'])}<br>
+                    TP: {format_price(data['tp'])}<br>
+                    RR: {rr:.2f}<br>
+                    ⏱️ {remaining:.0f}m remaining
+                </div>
+                """, unsafe_allow_html=True)
 
 # ==================== TAB 2: SMART MONEY ====================
 with tab2:
