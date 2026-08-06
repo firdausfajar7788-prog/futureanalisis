@@ -764,16 +764,41 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
         macd, signal, hist = MACD(df)
         k, d = StochasticRSI(df)
         last_idx = -1
-        return {
-            'macd': macd.iloc[last_idx] if not pd.isna(macd.iloc[last_idx]) else 0,
-            'signal': signal.iloc[last_idx] if not pd.isna(signal.iloc[last_idx]) else 0,
-            'hist': hist.iloc[last_idx] if not pd.isna(hist.iloc[last_idx]) else 0,
-            'stoch_k': k.iloc[last_idx] if not pd.isna(k.iloc[last_idx]) else 50,
-            'stoch_d': d.iloc[last_idx] if not pd.isna(d.iloc[last_idx]) else 50,
-            'macd_prev': macd.iloc[-2] if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
-            'signal_prev': signal.iloc[-2] if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
-            'stoch_k_prev': k.iloc[-2] if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
-        }
+    return {
+    "symbol": symbol,
+    "trend_1h": trend_1h,
+    "trend_15m": trend_15m,
+    "trend_5m": trend_5m,
+    "trend_4h": trend_4h,
+    "trend_1d": trend_1d,
+    "macd_4h": data_4h['macd'] if data_4h else 0,
+    "macd_1h": data_1h['macd'] if data_1h else 0,
+    "macd_15m": data_15m['macd'] if data_15m else 0,
+    "stoch_k_4h": data_4h['stoch_k'] if data_4h else 50,
+    "stoch_k_1h": data_1h['stoch_k'] if data_1h else 50,
+    "stoch_k_15m": data_15m['stoch_k'] if data_15m else 50,
+    "stoch_d_4h": data_4h['stoch_d'] if data_4h else 50,
+    "stoch_d_1h": data_1h['stoch_d'] if data_1h else 50,
+    "stoch_d_15m": data_15m['stoch_d'] if data_15m else 50,
+    "buy_confirmations": buy_confirmations,
+    "sell_confirmations": sell_confirmations,
+    "confirmations": max(buy_confirmations, sell_confirmations),  # ✅ TAMBAHKAN INI
+    "entry_signal": entry_signal,
+    "entry_price": entry_price,
+    "stop_loss": stop_loss,
+    "take_profit": take_profit,
+    "rsi_5m": 50,
+    "rsi_15m": 50,
+    "price": df_5m["Close"].iloc[-1],
+    "atr": atr_value,
+    "smart_money": sm_data,
+    "ai": ai_data,
+    "total_score": total_score,
+    "df_1h": df_1h.tail(50),
+    "df_15m": df_15m.tail(50),
+    "df_5m": df_5m.tail(30)
+    }
+        
     
     data_4h = get_macd_stoch_data(df_4h)
     data_1h = get_macd_stoch_data(df_1h)
@@ -1419,17 +1444,17 @@ with tab1:
                 }
                 
                 save_signal({
-                    'symbol': symbol,
-                    'signal': result["entry_signal"],
-                    'entry_price': result["entry_price"],
-                    'stop_loss': result["stop_loss"],
-                    'take_profit': result["take_profit"],
-                    'trend_1h': result["trend_1h"],
-                    'trend_15m': result["trend_15m"],
-                    'score': result['total_score'],
-                    'confidence': result['confirmations'] / 3 * 100,
-                    'ai_signal': result['ai']['signal_text'],
-                    'smart_money_score': result['smart_money']['score']
+                'symbol': symbol,
+                'signal': result["entry_signal"],
+                'entry_price': result["entry_price"],
+                'stop_loss': result["stop_loss"],
+                'take_profit': result["take_profit"],
+                'trend_1h': result["trend_1h"],
+                'trend_15m': result["trend_15m"],
+                'score': result['total_score'],
+                'confidence': result.get('confirmations', 1) / 3 * 100,  # ✅ PAKAI .get()
+                'ai_signal': result['ai']['signal_text'],
+                'smart_money_score': result['smart_money']['score']
                 })
                 
                 stats = get_performance()
