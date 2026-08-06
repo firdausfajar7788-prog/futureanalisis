@@ -245,11 +245,11 @@ def update_trade(trade_id, updates):
 def update_performance(stats):
     try:
         supabase = get_supabase()
-        supabase.table("performance").upsert({
-            "key": "performance_stats",
-            "value": stats,
-            "updated_at": datetime.now().isoformat()
-        }).execute()
+        # Gunakan upsert dengan key yang benar
+        supabase.table("performance").upsert(
+            {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()},
+            on_conflict="key"  # ✅ Tentukan kolom yang jadi acuan
+        ).execute()
         return True
     except Exception as e:
         st.warning(f"⚠️ Gagal update performance: {e}")
@@ -261,7 +261,13 @@ def get_performance():
         res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
         if res.data:
             return res.data[0]["value"]
-        return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+        # Jika belum ada data, buat default
+        default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+        try:
+            supabase.table("performance").insert({"key": "performance_stats", "value": default}).execute()
+        except:
+            pass
+        return default
     return safe_supabase_request(_fetch, {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0})
 
 # --- DAILY STATS ---
