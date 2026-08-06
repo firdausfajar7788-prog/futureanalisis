@@ -32,7 +32,7 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖",
+    page_title="🤖 Crypto Bot PRO",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -245,10 +245,9 @@ def update_trade(trade_id, updates):
 def update_performance(stats):
     try:
         supabase = get_supabase()
-        # Gunakan upsert dengan key yang benar
         supabase.table("performance").upsert(
             {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()},
-            on_conflict="key"  # ✅ Tentukan kolom yang jadi acuan
+            on_conflict="key"
         ).execute()
         return True
     except Exception as e:
@@ -261,7 +260,6 @@ def get_performance():
         res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
         if res.data:
             return res.data[0]["value"]
-        # Jika belum ada data, buat default
         default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
         try:
             supabase.table("performance").insert({"key": "performance_stats", "value": default}).execute()
@@ -274,7 +272,7 @@ def get_performance():
 def save_daily_stats(stats):
     try:
         supabase = get_supabase()
-        supabase.table("daily_stats").upsert(stats).execute()
+        supabase.table("daily_stats").upsert(stats, on_conflict="date").execute()
         return True
     except:
         return False
@@ -925,23 +923,18 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
         "trend_5m": trend_5m,
         "trend_4h": trend_4h,
         "trend_1d": trend_1d,
-        # MACD values dengan safe fallback
         "macd_4h": data_4h['macd'] if data_4h and 'macd' in data_4h else 0,
         "macd_1h": data_1h['macd'] if data_1h and 'macd' in data_1h else 0,
         "macd_15m": data_15m['macd'] if data_15m and 'macd' in data_15m else 0,
-        # Stoch K values
         "stoch_k_4h": data_4h['stoch_k'] if data_4h and 'stoch_k' in data_4h else 50,
         "stoch_k_1h": data_1h['stoch_k'] if data_1h and 'stoch_k' in data_1h else 50,
         "stoch_k_15m": data_15m['stoch_k'] if data_15m and 'stoch_k' in data_15m else 50,
-        # Stoch D values
         "stoch_d_4h": data_4h['stoch_d'] if data_4h and 'stoch_d' in data_4h else 50,
         "stoch_d_1h": data_1h['stoch_d'] if data_1h and 'stoch_d' in data_1h else 50,
         "stoch_d_15m": data_15m['stoch_d'] if data_15m and 'stoch_d' in data_15m else 50,
-        # Confirmations
         "buy_confirmations": buy_confirmations,
         "sell_confirmations": sell_confirmations,
         "confirmations": max(buy_confirmations, sell_confirmations),
-        # Signal
         "entry_signal": entry_signal,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
@@ -973,7 +966,7 @@ def create_chart(result, symbol):
     df = result["df_5m"]
     df_15m = result["df_15m"].copy()
     
-    # --- HITUNG INDIKATOR UNTUK CHART ---
+    # Hitung indikator untuk chart
     df_15m["RSI"] = RSI(df_15m, 14)
     macd, signal, hist = MACD(df_15m)
     df_15m["MACD"] = macd
@@ -987,7 +980,7 @@ def create_chart(result, symbol):
     df_15m["STOCH_K"] = k
     df_15m["STOCH_D"] = d
     
-    # --- CANDLESTICK ---
+    # Candlestick
     fig.add_trace(
         go.Candlestick(
             x=df["Time"],
@@ -1020,10 +1013,6 @@ def create_chart(result, symbol):
         row=1, col=1
     )
     
-    # HAPUS 2 BARIS INI (support/resistance tidak ada di result baru)
-    # fig.add_hline(y=result["support"], line_dash="dot", line_color="green", row=1, col=1)
-    # fig.add_hline(y=result["resistance"], line_dash="dot", line_color="red", row=1, col=1)
-    
     if result["entry_signal"] and result["entry_price"]:
         fig.add_hline(y=result["entry_price"], line_dash="solid", line_color="#00ff88", row=1, col=1)
         if result["stop_loss"]:
@@ -1031,7 +1020,7 @@ def create_chart(result, symbol):
         if result["take_profit"]:
             fig.add_hline(y=result["take_profit"], line_dash="dash", line_color="#00ff00", row=1, col=1)
     
-    # --- ROW 2: RSI ---
+    # RSI
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"),
         row=2, col=1
@@ -1039,7 +1028,7 @@ def create_chart(result, symbol):
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
     
-    # --- ROW 3: MACD ---
+    # MACD
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["MACD"], line=dict(color="#00a2ff", width=1.5), name="MACD"),
         row=3, col=1
@@ -1054,7 +1043,7 @@ def create_chart(result, symbol):
         row=3, col=1
     )
     
-    # --- ROW 4: Stochastic ---
+    # Stochastic
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
         row=4, col=1
@@ -1066,7 +1055,7 @@ def create_chart(result, symbol):
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
     
-    # --- ROW 5: Volume ---
+    # Volume
     colors_vol = ["#00ff88" if c >= o else "#ff3b5c" for c, o in zip(df["Close"], df["Open"])]
     fig.add_trace(
         go.Bar(x=df["Time"], y=df["Volume"], marker_color=colors_vol, opacity=0.5, name="Volume"),
@@ -1103,6 +1092,7 @@ def create_chart(result, symbol):
     fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
     return fig
+
 # =========================================================
 # EXECUTE TRADE
 # =========================================================
@@ -1330,7 +1320,7 @@ if "backtest_result" not in st.session_state:
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖")
+st.title("🤖 Crypto Bot PRO")
 st.caption("Multi Timeframe: 1D | 4H | 1H | 15M | 5M | Smart Money | AI Online Learning | Auto Trading")
 
 # =========================================================
