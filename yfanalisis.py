@@ -965,8 +965,30 @@ def create_chart(result, symbol):
     )
     
     df = result["df_5m"]
-    df_15m = result["df_15m"]
+    df_15m = result["df_15m"].copy()  # copy agar tidak mengubah data asli
     
+    # --- HITUNG INDIKATOR UNTUK CHART ---
+    # RSI
+    df_15m["RSI"] = RSI(df_15m, 14)
+    
+    # MACD
+    macd, signal, hist = MACD(df_15m)
+    df_15m["MACD"] = macd
+    df_15m["MACD_SIGNAL"] = signal
+    df_15m["MACD_HIST"] = hist
+    
+    # Bollinger Bands
+    bb_upper, bb_mid, bb_lower = BollingerBands(df_15m)
+    df_15m["BB_UPPER"] = bb_upper
+    df_15m["BB_MIDDLE"] = bb_mid
+    df_15m["BB_LOWER"] = bb_lower
+    
+    # Stochastic RSI
+    k, d = StochasticRSI(df_15m)
+    df_15m["STOCH_K"] = k
+    df_15m["STOCH_D"] = d
+    
+    # --- CANDLESTICK ---
     fig.add_trace(
         go.Candlestick(
             x=df["Time"],
@@ -999,10 +1021,7 @@ def create_chart(result, symbol):
         row=1, col=1
     )
     
-    # ✅ HAPUS atau COMMENT baris ini (support/resistance tidak ada di result baru)
-    # fig.add_hline(y=result["support"], line_dash="dot", line_color="green", row=1, col=1)
-    # fig.add_hline(y=result["resistance"], line_dash="dot", line_color="red", row=1, col=1)
-    
+    # Entry, SL, TP
     if result["entry_signal"] and result["entry_price"]:
         fig.add_hline(y=result["entry_price"], line_dash="solid", line_color="#00ff88", row=1, col=1)
         if result["stop_loss"]:
@@ -1010,6 +1029,7 @@ def create_chart(result, symbol):
         if result["take_profit"]:
             fig.add_hline(y=result["take_profit"], line_dash="dash", line_color="#00ff00", row=1, col=1)
     
+    # --- ROW 2: RSI ---
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"),
         row=2, col=1
@@ -1017,21 +1037,22 @@ def create_chart(result, symbol):
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
     
-    macd, signal, hist = MACD(df_15m)
+    # --- ROW 3: MACD ---
     fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=macd, line=dict(color="#00a2ff", width=1.5), name="MACD"),
+        go.Scatter(x=df_15m["Time"], y=df_15m["MACD"], line=dict(color="#00a2ff", width=1.5), name="MACD"),
         row=3, col=1
     )
     fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=signal, line=dict(color="#ff00ff", width=1.5), name="Signal"),
+        go.Scatter(x=df_15m["Time"], y=df_15m["MACD_SIGNAL"], line=dict(color="#ff00ff", width=1.5), name="Signal"),
         row=3, col=1
     )
-    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in hist]
+    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in df_15m["MACD_HIST"]]
     fig.add_trace(
-        go.Bar(x=df_15m["Time"], y=hist, marker_color=colors, opacity=0.4, name="Histogram"),
+        go.Bar(x=df_15m["Time"], y=df_15m["MACD_HIST"], marker_color=colors, opacity=0.4, name="Histogram"),
         row=3, col=1
     )
     
+    # --- ROW 4: Stochastic ---
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
         row=4, col=1
@@ -1043,6 +1064,7 @@ def create_chart(result, symbol):
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
     
+    # --- ROW 5: Volume ---
     colors_vol = ["#00ff88" if c >= o else "#ff3b5c" for c, o in zip(df["Close"], df["Open"])]
     fig.add_trace(
         go.Bar(x=df["Time"], y=df["Volume"], marker_color=colors_vol, opacity=0.5, name="Volume"),
