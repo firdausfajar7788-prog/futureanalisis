@@ -999,8 +999,9 @@ def create_chart(result, symbol):
         row=1, col=1
     )
     
-    fig.add_hline(y=result["support"], line_dash="dot", line_color="green", row=1, col=1)
-    fig.add_hline(y=result["resistance"], line_dash="dot", line_color="red", row=1, col=1)
+    # ✅ HAPUS atau COMMENT baris ini (support/resistance tidak ada di result baru)
+    # fig.add_hline(y=result["support"], line_dash="dot", line_color="green", row=1, col=1)
+    # fig.add_hline(y=result["resistance"], line_dash="dot", line_color="red", row=1, col=1)
     
     if result["entry_signal"] and result["entry_price"]:
         fig.add_hline(y=result["entry_price"], line_dash="solid", line_color="#00ff88", row=1, col=1)
