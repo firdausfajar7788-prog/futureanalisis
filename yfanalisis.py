@@ -32,7 +32,7 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖 Crypto Bot PRO",
+    page_title="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -1307,7 +1307,7 @@ if "backtest_result" not in st.session_state:
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖 Crypto Bot PRO")
+st.title("🤖")
 st.caption("Multi Timeframe: 1D | 4H | 1H | 15M | 5M | Smart Money | AI Online Learning | Auto Trading")
 
 # =========================================================
