@@ -730,7 +730,7 @@ def analyze_trend(df, timeframe_name):
         return "🟡 SIDEWAYS"
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME
+# ANALISIS MULTI TIMEFRAME (MACD + StochRSI)
 # =========================================================
 def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
     # Ambil data semua timeframe
@@ -758,34 +758,30 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     trend_1d = analyze_trend(df_1d, "1D")
 
     # --- HITUNG MACD & STOCHRSI untuk SEMUA TIMEFRAME ---
-def get_macd_stoch_data(df):
-    """Ambil data MACD dan StochRSI terbaru dari dataframe"""
-    if df is None or len(df) < 20:
-        return None
-    
-    try:
-        macd, signal, hist = MACD(df)
-        k, d = StochasticRSI(df)
-        
-        # Pastikan data tidak kosong
-        if macd.empty or k.empty:
+    def get_macd_stoch_data(df):
+        if df is None or len(df) < 20:
             return None
-        
-        last_idx = -1
-        
-        return {
-            'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
-            'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
-            'hist': float(hist.iloc[last_idx]) if not pd.isna(hist.iloc[last_idx]) else 0,
-            'stoch_k': float(k.iloc[last_idx]) if not pd.isna(k.iloc[last_idx]) else 50,
-            'stoch_d': float(d.iloc[last_idx]) if not pd.isna(d.iloc[last_idx]) else 50,
-            'macd_prev': float(macd.iloc[-2]) if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
-            'signal_prev': float(signal.iloc[-2]) if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
-            'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
-        }
-    except Exception as e:
-        return None
-        
+        try:
+            macd, signal, hist = MACD(df)
+            k, d = StochasticRSI(df)
+            
+            if macd.empty or k.empty:
+                return None
+            
+            last_idx = -1
+            
+            return {
+                'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
+                'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
+                'hist': float(hist.iloc[last_idx]) if not pd.isna(hist.iloc[last_idx]) else 0,
+                'stoch_k': float(k.iloc[last_idx]) if not pd.isna(k.iloc[last_idx]) else 50,
+                'stoch_d': float(d.iloc[last_idx]) if not pd.isna(d.iloc[last_idx]) else 50,
+                'macd_prev': float(macd.iloc[-2]) if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
+                'signal_prev': float(signal.iloc[-2]) if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
+                'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
+            }
+        except Exception as e:
+            return None
     
     data_4h = get_macd_stoch_data(df_4h)
     data_1h = get_macd_stoch_data(df_1h)
@@ -794,67 +790,67 @@ def get_macd_stoch_data(df):
     
     # --- BANGUN SIGNAL BERDASARKAN MACD + STOCHRSI ---
     
-def check_buy_signal(d4, d1, d15):
-    """Cek apakah semua kondisi BUY terpenuhi"""
-    if not d4 or not d1 or not d15:
-        return False
-    
-    try:
-        # 1. MACD 4H > 0 (trend bullish)
-        if d4.get('macd', 0) <= 0:
+    def check_buy_signal(d4, d1, d15):
+        """Cek apakah semua kondisi BUY terpenuhi"""
+        if not d4 or not d1 or not d15:
             return False
         
-        # 2. MACD 1H > Signal (bullish cross)
-        if d1.get('macd', 0) <= d1.get('signal', 0):
-            return False
-        
-        # 3. MACD 15M > Signal (bullish cross)
-        if d15.get('macd', 0) <= d15.get('signal', 0):
-            return False
-        
-        # 4. StochRSI tidak overbought (K < 80)
-        if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
-            return False
-        
-        # 5. StochRSI 15M > 20 atau baru naik dari bawah 20
-        if d15.get('stoch_k', 50) < 20:
-            if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
+        try:
+            # 1. MACD 4H > 0 (trend bullish)
+            if d4.get('macd', 0) <= 0:
                 return False
-        
-        return True
-    except:
-        return False
-
-def check_sell_signal(d4, d1, d15):
-    """Cek apakah semua kondisi SELL terpenuhi"""
-    if not d4 or not d1 or not d15:
-        return False
-    
-    try:
-        # 1. MACD 4H < 0 (trend bearish)
-        if d4.get('macd', 0) >= 0:
-            return False
-        
-        # 2. MACD 1H < Signal (bearish cross)
-        if d1.get('macd', 0) >= d1.get('signal', 0):
-            return False
-        
-        # 3. MACD 15M < Signal (bearish cross)
-        if d15.get('macd', 0) >= d15.get('signal', 0):
-            return False
-        
-        # 4. StochRSI tidak oversold (K > 20)
-        if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
-            return False
-        
-        # 5. StochRSI 15M < 80 atau baru turun dari atas 80
-        if d15.get('stoch_k', 50) > 80:
-            if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
+            
+            # 2. MACD 1H > Signal (bullish cross)
+            if d1.get('macd', 0) <= d1.get('signal', 0):
                 return False
+            
+            # 3. MACD 15M > Signal (bullish cross)
+            if d15.get('macd', 0) <= d15.get('signal', 0):
+                return False
+            
+            # 4. StochRSI tidak overbought (K < 80)
+            if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
+                return False
+            
+            # 5. StochRSI 15M > 20 atau baru naik dari bawah 20
+            if d15.get('stoch_k', 50) < 20:
+                if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
+                    return False
+            
+            return True
+        except:
+            return False
+    
+    def check_sell_signal(d4, d1, d15):
+        """Cek apakah semua kondisi SELL terpenuhi"""
+        if not d4 or not d1 or not d15:
+            return False
         
-        return True
-    except:
-        return False
+        try:
+            # 1. MACD 4H < 0 (trend bearish)
+            if d4.get('macd', 0) >= 0:
+                return False
+            
+            # 2. MACD 1H < Signal (bearish cross)
+            if d1.get('macd', 0) >= d1.get('signal', 0):
+                return False
+            
+            # 3. MACD 15M < Signal (bearish cross)
+            if d15.get('macd', 0) >= d15.get('signal', 0):
+                return False
+            
+            # 4. StochRSI tidak oversold (K > 20)
+            if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
+                return False
+            
+            # 5. StochRSI 15M < 80 atau baru turun dari atas 80
+            if d15.get('stoch_k', 50) > 80:
+                if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
+                    return False
+            
+            return True
+        except:
+            return False
     
     # --- Tentukan ENTRY SIGNAL ---
     entry_signal = None
@@ -866,14 +862,14 @@ def check_sell_signal(d4, d1, d15):
     sell_confirmations = 0
     
     if data_4h:
-        if data_4h['macd'] > 0: buy_confirmations += 1
-        if data_4h['macd'] < 0: sell_confirmations += 1
+        if data_4h.get('macd', 0) > 0: buy_confirmations += 1
+        if data_4h.get('macd', 0) < 0: sell_confirmations += 1
     if data_1h:
-        if data_1h['macd'] > data_1h['signal']: buy_confirmations += 1
-        if data_1h['macd'] < data_1h['signal']: sell_confirmations += 1
+        if data_1h.get('macd', 0) > data_1h.get('signal', 0): buy_confirmations += 1
+        if data_1h.get('macd', 0) < data_1h.get('signal', 0): sell_confirmations += 1
     if data_15m:
-        if data_15m['macd'] > data_15m['signal']: buy_confirmations += 1
-        if data_15m['macd'] < data_15m['signal']: sell_confirmations += 1
+        if data_15m.get('macd', 0) > data_15m.get('signal', 0): buy_confirmations += 1
+        if data_15m.get('macd', 0) < data_15m.get('signal', 0): sell_confirmations += 1
     
     # Tentukan sinyal berdasarkan konfirmasi
     if is_buy and buy_confirmations >= 2:
@@ -915,7 +911,7 @@ def check_sell_signal(d4, d1, d15):
     total_score = (sm_data['score'] * 0.4 + ai_data['score'] * 0.4 + macd_score * 0.2)
     total_score = max(0, min(100, total_score))
     
-    # --- RETURN ---
+    # --- RETURN DENGAN PENANGANAN NONE ---
     return {
         "symbol": symbol,
         "trend_1h": trend_1h,
@@ -923,17 +919,23 @@ def check_sell_signal(d4, d1, d15):
         "trend_5m": trend_5m,
         "trend_4h": trend_4h,
         "trend_1d": trend_1d,
-        "macd_4h": data_4h['macd'] if data_4h else 0,
-        "macd_1h": data_1h['macd'] if data_1h else 0,
-        "macd_15m": data_15m['macd'] if data_15m else 0,
-        "stoch_k_4h": data_4h['stoch_k'] if data_4h else 50,
-        "stoch_k_1h": data_1h['stoch_k'] if data_1h else 50,
-        "stoch_k_15m": data_15m['stoch_k'] if data_15m else 50,
-        "stoch_d_4h": data_4h['stoch_d'] if data_4h else 50,
-        "stoch_d_1h": data_1h['stoch_d'] if data_1h else 50,
-        "stoch_d_15m": data_15m['stoch_d'] if data_15m else 50,
+        # MACD values dengan safe fallback
+        "macd_4h": data_4h['macd'] if data_4h and 'macd' in data_4h else 0,
+        "macd_1h": data_1h['macd'] if data_1h and 'macd' in data_1h else 0,
+        "macd_15m": data_15m['macd'] if data_15m and 'macd' in data_15m else 0,
+        # Stoch K values
+        "stoch_k_4h": data_4h['stoch_k'] if data_4h and 'stoch_k' in data_4h else 50,
+        "stoch_k_1h": data_1h['stoch_k'] if data_1h and 'stoch_k' in data_1h else 50,
+        "stoch_k_15m": data_15m['stoch_k'] if data_15m and 'stoch_k' in data_15m else 50,
+        # Stoch D values
+        "stoch_d_4h": data_4h['stoch_d'] if data_4h and 'stoch_d' in data_4h else 50,
+        "stoch_d_1h": data_1h['stoch_d'] if data_1h and 'stoch_d' in data_1h else 50,
+        "stoch_d_15m": data_15m['stoch_d'] if data_15m and 'stoch_d' in data_15m else 50,
+        # Confirmations
         "buy_confirmations": buy_confirmations,
         "sell_confirmations": sell_confirmations,
+        "confirmations": max(buy_confirmations, sell_confirmations),
+        # Signal
         "entry_signal": entry_signal,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
@@ -1082,7 +1084,7 @@ def create_chart(result, symbol):
 # =========================================================
 def execute_trade(symbol, df, balance=10000, position_size=100, leverage=10):
     result = analyze_mtf(symbol)
-    if not result or not result["entry_signal"]:
+    if not result or not result["entry_signal"] or "WAIT" in result["entry_signal"]:
         return None
     
     entry_price = result["entry_price"]
@@ -1104,10 +1106,10 @@ def execute_trade(symbol, df, balance=10000, position_size=100, leverage=10):
         'position_size': position_size,
         'leverage': leverage,
         'score': result['total_score'],
-        'confidence': result['confirmations'] / 3 * 100,
+        'confidence': result.get('confirmations', 1) / 3 * 100,
         'signal': result["entry_signal"],
         'status': 'OPEN',
-        'entry_time': datetime.now(),
+        'entry_time': datetime.now().isoformat(),
         'smart_money_score': result['smart_money']['score'],
         'ai_score': result['ai']['score'],
         'predicted_signal': ai_pred['signal'],
@@ -1156,15 +1158,13 @@ def monitor_positions():
                 closed = True
         
         if closed:
-            # ✅ Buat dictionary update dengan semua nilai yang sudah dikonversi
             updates = {
                 'status': 'CLOSED',
                 'exit_price': exit_price,
                 'profit_pct': profit_pct,
-                'exit_time': datetime.now().isoformat()  # ✅ string ISO
+                'exit_time': datetime.now().isoformat()
             }
             
-            # ✅ Update dengan updates yang sudah bersih
             update_trade(trade['id'], updates)
             
             msg = f"{'✅' if profit_pct > 0 else '❌'} {symbol} Closed: {profit_pct:.2f}%"
@@ -1200,7 +1200,7 @@ def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5)
         current_price = df['Close'].iloc[i]
         
         if not in_position:
-            if result["entry_signal"]:
+            if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
                 in_position = True
                 entry_price = current_price
                 trade_type = 'BUY' if 'BUY' in result["entry_signal"] else 'SELL'
@@ -1425,7 +1425,7 @@ with tab1:
                 entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
                 is_pending = False
             
-            if result["entry_signal"] and symbol not in st.session_state.pending_signal:
+            if result["entry_signal"] and "WAIT" not in result["entry_signal"] and symbol not in st.session_state.pending_signal:
                 st.session_state.pending_signal[symbol] = {
                     "signal": result["entry_signal"],
                     "time": datetime.now(),
@@ -1435,30 +1435,30 @@ with tab1:
                 }
                 
                 save_signal({
-                'symbol': symbol,
-                'signal': result["entry_signal"],
-                'entry_price': result["entry_price"],
-                'stop_loss': result["stop_loss"],
-                'take_profit': result["take_profit"],
-                'trend_1h': result["trend_1h"],
-                'trend_15m': result["trend_15m"],
-                'score': result['total_score'],
-                'confidence': result.get('confirmations', 1) / 3 * 100,  # ✅ PAKAI .get()
-                'ai_signal': result['ai']['signal_text'],
-                'smart_money_score': result['smart_money']['score']
+                    'symbol': symbol,
+                    'signal': result["entry_signal"],
+                    'entry_price': result["entry_price"],
+                    'stop_loss': result["stop_loss"],
+                    'take_profit': result["take_profit"],
+                    'trend_1h': result["trend_1h"],
+                    'trend_15m': result["trend_15m"],
+                    'score': result['total_score'],
+                    'confidence': result.get('confirmations', 1) / 3 * 100,
+                    'ai_signal': result['ai']['signal_text'],
+                    'smart_money_score': result['smart_money']['score']
                 })
                 
                 stats = get_performance()
                 stats['total_signals'] = stats.get('total_signals', 0) + 1
                 update_performance(stats)
                 
-                if result["entry_signal"]:
-                    rr = ((result["take_profit"] / result["entry_price"] - 1) / 
-                          (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
-                    msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                    send_telegram(msg)
+                if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
+                    if result["take_profit"] and result["stop_loss"] and result["entry_price"]:
+                        rr = ((result["take_profit"] / result["entry_price"] - 1) / 
+                              (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
+                        msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        send_telegram(msg)
             
-           
             all_signals.append({
                 "Coin": symbol,
                 "Trend 1D": result.get("trend_1d", ""),
@@ -1476,8 +1476,9 @@ with tab1:
                 "Stoch 15M": f"{result.get('stoch_k_15m', 50):.1f}",
                 "AI": result['ai']['signal_text'],
                 "SM Score": result['smart_money']['score'],
-    })
-                
+                "Confirm": f"{result.get('confirmations', 0)}/3"
+            })
+    
     progress_bar.empty()
     status_text.empty()
     
@@ -1503,7 +1504,10 @@ with tab1:
             with cols[col_idx]:
                 elapsed = (datetime.now() - data["time"]).seconds / 60
                 remaining = max(0, hold_minutes - elapsed)
-                rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
+                if data["entry"] and data["sl"] and data["tp"]:
+                    rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
+                else:
+                    rr = 0
                 st.markdown(f"""
                 <div class="pending-signal">
                     <b>{symbol}</b><br>
@@ -1531,7 +1535,7 @@ with tab2:
             col2.metric("Market Structure", 
                        "🟢 Bullish" if result['smart_money']['reasons'] else "🟡 Neutral")
             col3.metric("Order Blocks", len(result['smart_money']['reasons']))
-            col4.metric("Total Confirmations", f"{result['confirmations']}/3")
+            col4.metric("Total Confirmations", f"{result.get('confirmations', 0)}/3")
             
             with st.expander("📋 Smart Money Details", expanded=True):
                 for reason in result['smart_money']['reasons']:
@@ -1720,5 +1724,6 @@ st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1D, 4H, 1H, 15M, 5M  
 📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
 🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
-💾 Database: Supabase PostgreSQL | 🤖 AI: Ensemble (RF+GBM+SGD) + Online Learning
+💾 Database: Supabase PostgreSQL | 🤖 AI: Ensemble (RF+GBM+SGD) + Online Learning  
+📈 Signal: MACD (4H,1H,15M) + StochRSI (4H,1H,15M)
 """)
