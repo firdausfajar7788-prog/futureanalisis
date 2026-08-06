@@ -758,46 +758,33 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     trend_1d = analyze_trend(df_1d, "1D")
 
     # --- HITUNG MACD & STOCHRSI untuk SEMUA TIMEFRAME ---
-    def get_macd_stoch_data(df):
-        if df is None or len(df) < 20:
-            return None
+def get_macd_stoch_data(df):
+    """Ambil data MACD dan StochRSI terbaru dari dataframe"""
+    if df is None or len(df) < 20:
+        return None
+    
+    try:
         macd, signal, hist = MACD(df)
         k, d = StochasticRSI(df)
+        
+        # Pastikan data tidak kosong
+        if macd.empty or k.empty:
+            return None
+        
         last_idx = -1
-    return {
-    "symbol": symbol,
-    "trend_1h": trend_1h,
-    "trend_15m": trend_15m,
-    "trend_5m": trend_5m,
-    "trend_4h": trend_4h,
-    "trend_1d": trend_1d,
-    "macd_4h": data_4h['macd'] if data_4h else 0,
-    "macd_1h": data_1h['macd'] if data_1h else 0,
-    "macd_15m": data_15m['macd'] if data_15m else 0,
-    "stoch_k_4h": data_4h['stoch_k'] if data_4h else 50,
-    "stoch_k_1h": data_1h['stoch_k'] if data_1h else 50,
-    "stoch_k_15m": data_15m['stoch_k'] if data_15m else 50,
-    "stoch_d_4h": data_4h['stoch_d'] if data_4h else 50,
-    "stoch_d_1h": data_1h['stoch_d'] if data_1h else 50,
-    "stoch_d_15m": data_15m['stoch_d'] if data_15m else 50,
-    "buy_confirmations": buy_confirmations,
-    "sell_confirmations": sell_confirmations,
-    "confirmations": max(buy_confirmations, sell_confirmations),  # ✅ TAMBAHKAN INI
-    "entry_signal": entry_signal,
-    "entry_price": entry_price,
-    "stop_loss": stop_loss,
-    "take_profit": take_profit,
-    "rsi_5m": 50,
-    "rsi_15m": 50,
-    "price": df_5m["Close"].iloc[-1],
-    "atr": atr_value,
-    "smart_money": sm_data,
-    "ai": ai_data,
-    "total_score": total_score,
-    "df_1h": df_1h.tail(50),
-    "df_15m": df_15m.tail(50),
-    "df_5m": df_5m.tail(30)
-    }
+        
+        return {
+            'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
+            'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
+            'hist': float(hist.iloc[last_idx]) if not pd.isna(hist.iloc[last_idx]) else 0,
+            'stoch_k': float(k.iloc[last_idx]) if not pd.isna(k.iloc[last_idx]) else 50,
+            'stoch_d': float(d.iloc[last_idx]) if not pd.isna(d.iloc[last_idx]) else 50,
+            'macd_prev': float(macd.iloc[-2]) if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
+            'signal_prev': float(signal.iloc[-2]) if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
+            'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
+        }
+    except Exception as e:
+        return None
         
     
     data_4h = get_macd_stoch_data(df_4h)
@@ -807,63 +794,67 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     
     # --- BANGUN SIGNAL BERDASARKAN MACD + STOCHRSI ---
     
-    def check_buy_signal(d4, d1, d15):
-        """Cek apakah semua kondisi BUY terpenuhi"""
-        if not d4 or not d1 or not d15:
-            return False
-        
+def check_buy_signal(d4, d1, d15):
+    """Cek apakah semua kondisi BUY terpenuhi"""
+    if not d4 or not d1 or not d15:
+        return False
+    
+    try:
         # 1. MACD 4H > 0 (trend bullish)
-        if d4['macd'] <= 0:
+        if d4.get('macd', 0) <= 0:
             return False
         
         # 2. MACD 1H > Signal (bullish cross)
-        if d1['macd'] <= d1['signal']:
+        if d1.get('macd', 0) <= d1.get('signal', 0):
             return False
         
         # 3. MACD 15M > Signal (bullish cross)
-        if d15['macd'] <= d15['signal']:
+        if d15.get('macd', 0) <= d15.get('signal', 0):
             return False
         
         # 4. StochRSI tidak overbought (K < 80)
-        if d4['stoch_k'] >= 80 or d1['stoch_k'] >= 80 or d15['stoch_k'] >= 80:
+        if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
             return False
         
         # 5. StochRSI 15M > 20 atau baru naik dari bawah 20
-        if d15['stoch_k'] < 20:
-            # Oversold, tapi bisa jadi sinyal jika mulai naik
-            if d15['stoch_k'] <= d15['stoch_k_prev']:
+        if d15.get('stoch_k', 50) < 20:
+            if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
                 return False
         
         return True
+    except:
+        return False
+
+def check_sell_signal(d4, d1, d15):
+    """Cek apakah semua kondisi SELL terpenuhi"""
+    if not d4 or not d1 or not d15:
+        return False
     
-    def check_sell_signal(d4, d1, d15):
-        """Cek apakah semua kondisi SELL terpenuhi"""
-        if not d4 or not d1 or not d15:
-            return False
-        
+    try:
         # 1. MACD 4H < 0 (trend bearish)
-        if d4['macd'] >= 0:
+        if d4.get('macd', 0) >= 0:
             return False
         
         # 2. MACD 1H < Signal (bearish cross)
-        if d1['macd'] >= d1['signal']:
+        if d1.get('macd', 0) >= d1.get('signal', 0):
             return False
         
         # 3. MACD 15M < Signal (bearish cross)
-        if d15['macd'] >= d15['signal']:
+        if d15.get('macd', 0) >= d15.get('signal', 0):
             return False
         
         # 4. StochRSI tidak oversold (K > 20)
-        if d4['stoch_k'] <= 20 or d1['stoch_k'] <= 20 or d15['stoch_k'] <= 20:
+        if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
             return False
         
         # 5. StochRSI 15M < 80 atau baru turun dari atas 80
-        if d15['stoch_k'] > 80:
-            # Overbought, tapi bisa jadi sinyal jika mulai turun
-            if d15['stoch_k'] >= d15['stoch_k_prev']:
+        if d15.get('stoch_k', 50) > 80:
+            if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
                 return False
         
         return True
+    except:
+        return False
     
     # --- Tentukan ENTRY SIGNAL ---
     entry_signal = None
