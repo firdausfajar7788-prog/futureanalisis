@@ -1417,7 +1417,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
 ])
 
 # ==================== TAB 1: SCANNER ====================
- with tab1:
+with tab1:
     st.subheader("📊 Signal Summary")
     
     current_time = datetime.now()
