@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
-import time
+
 # =========================================================
 # CACHE DATA YAHOO FINANCE
 # =========================================================
