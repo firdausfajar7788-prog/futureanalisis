@@ -151,7 +151,8 @@ def get_supabase():
         except:
             pass
     if not url or not key:
-        raise Exception("SUPABASE_URL atau SUPABASE_KEY belum diisi.")
+        # Return dummy client jika tidak ada koneksi
+        return None
     return create_client(url, key)
 
 # =========================================================
@@ -176,22 +177,26 @@ def safe_supabase_request(func, default=None):
     try:
         return func()
     except Exception as e:
-        st.warning(f"Supabase Error: {e}")
         return default
 
 # =========================================================
 # DATABASE FUNCTIONS
 # =========================================================
 def get_watchlist():
-    def _fetch():
+    try:
         supabase = get_supabase()
+        if supabase is None:
+            return ["BTC", "ETH", "SOL", "BNB", "XRP"]
         res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-        return [r["symbol"] for r in res.data] if res.data else ["BTC", "ETH", "SOL"]
-    return safe_supabase_request(_fetch, ["BTC", "ETH", "SOL"])
+        return [r["symbol"] for r in res.data] if res.data else ["BTC", "ETH", "SOL", "BNB", "XRP"]
+    except:
+        return ["BTC", "ETH", "SOL", "BNB", "XRP"]
 
 def add_coin(symbol):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
         return True
     except:
@@ -200,6 +205,8 @@ def add_coin(symbol):
 def remove_coin(symbol):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
         return True
     except:
@@ -208,23 +215,29 @@ def remove_coin(symbol):
 def save_signal(data):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         data["timestamp"] = datetime.now().isoformat()
         supabase.table("signal_history").insert(data).execute()
         return True
     except Exception as e:
-        st.warning(f"⚠️ Gagal simpan signal: {e}")
         return False
 
 def get_signal_history(limit=100):
-    def _fetch():
+    try:
         supabase = get_supabase()
+        if supabase is None:
+            return []
         res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
         return res.data or []
-    return safe_supabase_request(_fetch, [])
+    except:
+        return []
 
 def save_trade(data):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         data["entry_time"] = datetime.now().isoformat()
         data["status"] = "OPEN"
         res = supabase.table("trades").insert(data).execute()
@@ -232,40 +245,46 @@ def save_trade(data):
             data["id"] = res.data[0]["id"]
         return True
     except Exception as e:
-        st.warning(f"⚠️ Gagal simpan trade: {e}")
         return False
 
 def get_trades(limit=100):
-    def _fetch():
+    try:
         supabase = get_supabase()
+        if supabase is None:
+            return []
         res = supabase.table("trades").select("*").order("entry_time", desc=True).limit(limit).execute()
         return res.data or []
-    return safe_supabase_request(_fetch, [])
+    except:
+        return []
 
 def update_trade(trade_id, updates):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         supabase.table("trades").update(updates).eq("id", trade_id).execute()
         return True
-    except Exception as e:
-        st.warning(f"⚠️ Gagal update trade: {e}")
+    except:
         return False
 
 def update_performance(stats):
     try:
         supabase = get_supabase()
+        if supabase is None:
+            return False
         supabase.table("performance").upsert(
             {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()},
             on_conflict="key"
         ).execute()
         return True
-    except Exception as e:
-        st.warning(f"⚠️ Gagal update performance: {e}")
+    except:
         return False
 
 def get_performance():
-    def _fetch():
+    try:
         supabase = get_supabase()
+        if supabase is None:
+            return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
         res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
         if res.data:
             return res.data[0]["value"]
@@ -275,7 +294,8 @@ def get_performance():
         except:
             pass
         return default
-    return safe_supabase_request(_fetch, {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0})
+    except:
+        return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
 
 # =========================================================
 # TELEGRAM
@@ -408,7 +428,7 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     return k, d
 
 # =========================================================
-# SMART MONEY CONCEPTS (SEDERHANA)
+# SMART MONEY CONCEPTS
 # =========================================================
 def find_order_blocks(df, lookback=20):
     blocks = []
@@ -1050,35 +1070,42 @@ with tab1:
     for symbol in expired_signals:
         del st.session_state.pending_signal[symbol]
     
-    all_signals = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # Container untuk menampilkan progress
+    progress_container = st.container()
+    with progress_container:
+        progress_bar = st.progress(0)
+        status_text = st.empty()
     
-    for idx, symbol in enumerate(st.session_state.watchlist[:20]):
-        progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:20]))
+    all_signals = []
+    
+    # Proses scanning
+    watchlist = st.session_state.watchlist[:20]  # Batasi 20 coin
+    
+    for idx, symbol in enumerate(watchlist):
+        progress_bar.progress((idx + 1) / len(watchlist))
         status_text.text(f"🔄 Scanning {symbol}...")
         
         try:
             result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
         except Exception as e:
-            st.error(f"⚠️ Error scanning {symbol}: {e}")
+            # Tambahkan error ke log
             all_signals.append({
                 "Coin": symbol,
                 "Trend 1D": "❌ ERROR",
-                "Trend 4H": "",
-                "Trend 1H": "",
-                "Trend 15M": "",
-                "Trend 5M": "",
+                "Trend 4H": "-",
+                "Trend 1H": "-",
+                "Trend 15M": "-",
+                "Trend 5M": "-",
                 "Signal": "⏳ ERROR",
                 "Score": "0",
-                "MACD 4H": "",
-                "MACD 1H": "",
-                "MACD 15M": "",
-                "Stoch 4H": "",
-                "Stoch 1H": "",
-                "Stoch 15M": "",
-                "SM Score": "",
-                "Confirm": ""
+                "MACD 4H": "-",
+                "MACD 1H": "-",
+                "MACD 15M": "-",
+                "Stoch 4H": "-",
+                "Stoch 1H": "-",
+                "Stoch 15M": "-",
+                "SM Score": "-",
+                "Confirm": "-"
             })
             continue
         
@@ -1091,6 +1118,7 @@ with tab1:
                 entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
                 is_pending = False
             
+            # Cek sinyal baru
             if result["entry_signal"] and "WAIT" not in result["entry_signal"] and symbol not in st.session_state.pending_signal:
                 st.session_state.pending_signal[symbol] = {
                     "signal": result["entry_signal"],
@@ -1100,6 +1128,7 @@ with tab1:
                     "tp": result["take_profit"]
                 }
                 
+                # Simpan ke database
                 save_signal({
                     'symbol': symbol,
                     'signal': result["entry_signal"],
@@ -1113,10 +1142,12 @@ with tab1:
                     'smart_money_score': result['smart_money']['score']
                 })
                 
+                # Update performance
                 stats = get_performance()
                 stats['total_signals'] = stats.get('total_signals', 0) + 1
                 update_performance(stats)
                 
+                # Kirim Telegram
                 if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
                     if result["take_profit"] and result["stop_loss"] and result["entry_price"]:
                         rr = ((result["take_profit"] / result["entry_price"] - 1) / 
@@ -1124,10 +1155,11 @@ with tab1:
                         msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                         send_telegram(msg)
             
+            # Tambahkan ke list
             all_signals.append({
                 "Coin": symbol,
-                "Trend 1D": result.get("trend_1d", ""),
-                "Trend 4H": result.get("trend_4h", ""),
+                "Trend 1D": result.get("trend_1d", "-"),
+                "Trend 4H": result.get("trend_4h", "-"),
                 "Trend 1H": result["trend_1h"],
                 "Trend 15M": result["trend_15m"],
                 "Trend 5M": result["trend_5m"],
@@ -1139,50 +1171,79 @@ with tab1:
                 "Stoch 4H": f"{result.get('stoch_k_4h', 50):.1f}",
                 "Stoch 1H": f"{result.get('stoch_k_1h', 50):.1f}",
                 "Stoch 15M": f"{result.get('stoch_k_15m', 50):.1f}",
-                "SM Score": result['smart_money']['score'],
+                "SM Score": f"{result['smart_money']['score']}",
                 "Confirm": f"{result.get('confirmations', 0)}/3"
             })
         else:
             all_signals.append({
                 "Coin": symbol,
                 "Trend 1D": "⏳ NO DATA",
-                "Trend 4H": "",
-                "Trend 1H": "",
-                "Trend 15M": "",
-                "Trend 5M": "",
+                "Trend 4H": "-",
+                "Trend 1H": "-",
+                "Trend 15M": "-",
+                "Trend 5M": "-",
                 "Signal": "⏳ NO DATA",
                 "Score": "0",
-                "MACD 4H": "",
-                "MACD 1H": "",
-                "MACD 15M": "",
-                "Stoch 4H": "",
-                "Stoch 1H": "",
-                "Stoch 15M": "",
-                "SM Score": "",
-                "Confirm": ""
+                "MACD 4H": "-",
+                "MACD 1H": "-",
+                "MACD 15M": "-",
+                "Stoch 4H": "-",
+                "Stoch 1H": "-",
+                "Stoch 15M": "-",
+                "SM Score": "-",
+                "Confirm": "-"
             })
     
-    progress_bar.empty()
-    status_text.empty()
+    # Hapus progress bar
+    progress_container.empty()
     
+    # TAMPILKAN TABEL
     if all_signals:
-        df_signals = pd.DataFrame(all_signals)
-        if 'Score' in df_signals.columns:
-            df_signals['Score_num'] = df_signals['Score'].astype(float)
-            df_signals = df_signals.sort_values('Score_num', ascending=False).drop(columns=['Score_num'])
-        st.dataframe(df_signals, use_container_width=True, hide_index=True)
+        st.markdown("### 📋 Signal Table")
         
-        # Filter untuk sinyal terbaik
-        best_signals = df_signals[df_signals['Signal'].str.contains('BUY|SELL', na=False)]
-        if not best_signals.empty:
-            best = best_signals.iloc[0]
-            st.success(f"🏆 Best Signal: **{best['Coin']}** | Score: {best['Score']} | {best['Signal']}")
-        elif not df_signals.empty:
-            best = df_signals.iloc[0]
-            st.info(f"📊 Top Coin: **{best['Coin']}** | Score: {best['Score']}")
+        # Buat dataframe
+        df_signals = pd.DataFrame(all_signals)
+        
+        # Konversi Score ke numeric untuk sorting
+        df_signals['Score_Num'] = pd.to_numeric(df_signals['Score'], errors='coerce').fillna(0)
+        df_signals = df_signals.sort_values('Score_Num', ascending=False)
+        df_signals = df_signals.drop(columns=['Score_Num'])
+        
+        # Tampilkan tabel dengan styling
+        st.dataframe(
+            df_signals,
+            use_container_width=True,
+            hide_index=True,
+            height=400
+        )
+        
+        # Tampilkan statistik
+        st.divider()
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Coins Scanned", len(all_signals))
+        
+        # Hitung sinyal aktif
+        active_signals = [s for s in all_signals if 'BUY' in s['Signal'] or 'SELL' in s['Signal']]
+        col2.metric("Active Signals", len(active_signals))
+        
+        # Best signal
+        best_signals = [s for s in all_signals if 'BUY' in s['Signal'] or 'SELL' in s['Signal']]
+        if best_signals:
+            best = best_signals[0]
+            col3.metric("Best Signal", f"{best['Coin']} - {best['Signal']}")
+            col4.metric("Best Score", best['Score'])
+        else:
+            col3.metric("Best Signal", "No active signal")
+            col4.metric("Best Score", "0")
+        
+        # Tampilkan coin dengan skor tertinggi
+        top_coins = df_signals.nlargest(3, 'Score')['Coin'].tolist()
+        if top_coins:
+            st.info(f"🏆 Top Coins: {', '.join(top_coins)}")
     else:
-        st.info("ℹ️ Tidak ada data")
+        st.warning("⚠️ Tidak ada data yang berhasil di-scan. Periksa koneksi internet atau coba refresh.")
     
+    # Pending Signals
     if st.session_state.pending_signal:
         st.divider()
         st.subheader("⏳ Pending Signals (Aktif)")
@@ -1326,10 +1387,6 @@ with tab5:
         
         st.subheader("📈 Cumulative Profit")
         st.line_chart(df_perf.set_index('exit_time')['cumulative_profit'])
-        
-        # Profit distribution
-        st.subheader("📊 Profit Distribution")
-        st.bar_chart(df_perf['profit_pct'].value_counts().head(10))
 
 # =========================================================
 # FOOTER
@@ -1338,6 +1395,6 @@ st.divider()
 st.caption(f"""
 🔄 Data dari Yahoo Finance | Multi Timeframe: 1D, 4H, 1H, 15M, 5M  
 📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
-🎯 RR Strategy: 3:7 | 🛡️ Signal Hold: {hold_minutes}m  
+🎯 RR Strategy: {rr_sl}:{rr_tp} | 🛡️ Signal Hold: {hold_minutes}m  
 💾 Database: Supabase PostgreSQL | 📈 Signal: MACD (4H,1H,15M) + StochRSI (4H,1H,15M)
 """)
