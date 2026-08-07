@@ -6,6 +6,36 @@ import yfinance as yf
 import requests
 from datetime import datetime, timedelta
 import time
+# =========================================================
+# CACHE DATA YAHOO FINANCE
+# =========================================================
+import time
+
+_data_cache = {}
+_data_cache_time = {}
+
+def get_data_cached(symbol, interval, period, cache_ttl=30):
+    """
+    Data di-cache untuk mengurangi request Yahoo Finance.
+    TTL = 30 detik (bisa diatur).
+    """
+    key = f"{symbol}_{interval}_{period}"
+    current_time = time.time()
+    
+    # Cek cache
+    if key in _data_cache:
+        if current_time - _data_cache_time.get(key, 0) < cache_ttl:
+            return _data_cache[key]
+    
+    # Ambil data baru
+    df = get_data(symbol, interval, period)
+    if df is not None:
+        _data_cache[key] = df
+        _data_cache_time[key] = current_time
+    
+    return df
+
+
 import json
 import ta
 import numpy as np
