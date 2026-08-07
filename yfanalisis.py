@@ -5,27 +5,21 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
-import time
-import json
-import ta
-import numpy as np
-from streamlit_autorefresh import st_autorefresh
 import warnings
 import os
 from dotenv import load_dotenv
+from streamlit_autorefresh import st_autorefresh
+from supabase import create_client, Client
+from ta.volatility import AverageTrueRange
 
 load_dotenv()
-
-# --- SUPABASE ---
-from supabase import create_client
-
 warnings.filterwarnings('ignore')
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖 Crypto Bot PRO",
+    page_title="🤖 Crypto Bot PRO - MACD + Stoch RSI",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -61,12 +55,21 @@ st.markdown("""
         font-weight: 600;
         font-size: 18px;
     }
-    .signal-wait {
+    .signal-hold {
         background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
         border: 1px solid #ffaa00;
         border-radius: 12px;
         padding: 12px 20px;
         color: #ffaa00;
+        font-weight: 600;
+        font-size: 18px;
+    }
+    .signal-take-profit {
+        background: linear-gradient(135deg, rgba(0,150,255,0.15), rgba(0,150,255,0.05));
+        border: 1px solid #0096ff;
+        border-radius: 12px;
+        padding: 12px 20px;
+        color: #0096ff;
         font-weight: 600;
         font-size: 18px;
     }
@@ -98,180 +101,72 @@ st.markdown("""
         transform: scale(1.03);
         box-shadow: 0 0 30px rgba(0,255,255,0.3);
     }
-    .coin-card {
-        background: linear-gradient(145deg, #111827, #0b1220);
-        border: 1px solid #1e293b;
-        border-radius: 12px;
-        padding: 16px;
-        margin: 8px 0;
-        transition: all 0.3s ease;
-    }
-    .coin-card:hover {
-        border-color: #00ff88;
-        box-shadow: 0 0 20px rgba(0,255,255,0.1);
-    }
 </style>
 """, unsafe_allow_html=True)
-
-# =========================================================
-# CACHE DATA YAHOO FINANCE
-# =========================================================
-_data_cache = {}
-_data_cache_time = {}
-
-def get_data_cached(symbol, interval, period, cache_ttl=30):
-    key = f"{symbol}_{interval}_{period}"
-    current_time = time.time()
-    
-    if key in _data_cache:
-        if current_time - _data_cache_time.get(key, 0) < cache_ttl:
-            return _data_cache[key]
-    
-    df = get_data(symbol, interval, period)
-    if df is not None:
-        _data_cache[key] = df
-        _data_cache_time[key] = current_time
-    return df
 
 # =========================================================
 # SUPABASE CONNECTION
 # =========================================================
 @st.cache_resource
-def get_supabase():
+def get_supabase() -> Client:
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
-    if not url:
+    if not url or not key:
         try:
             url = st.secrets["supabase"]["url"]
-        except:
-            pass
-    if not key:
-        try:
             key = st.secrets["supabase"]["key"]
         except:
-            pass
-    if not url or not key:
-        # Return dummy client jika tidak ada koneksi
-        return None
+            st.error("❌ SUPABASE_URL atau SUPABASE_KEY tidak ditemukan")
+            st.stop()
     return create_client(url, key)
-
-# =========================================================
-# DOWNLOAD SEMUA TIMEFRAME SEKALIGUS
-# =========================================================
-@st.cache_data(ttl=30, show_spinner=False)
-def get_all_timeframes(symbol):
-    timeframes = {'1d': '1d', '4h': '4h', '1h': '1h', '15m': '15m', '5m': '5m'}
-    data = {}
-    for tf, interval in timeframes.items():
-        df = get_data_cached(symbol, interval, '30d', cache_ttl=30)
-        if df is not None and len(df) >= 20:
-            data[tf] = df
-        else:
-            data[tf] = None
-    return data
-
-# =========================================================
-# SAFE SUPABASE REQUEST
-# =========================================================
-def safe_supabase_request(func, default=None):
-    try:
-        return func()
-    except Exception as e:
-        return default
 
 # =========================================================
 # DATABASE FUNCTIONS
 # =========================================================
 def get_watchlist():
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return ["BTC", "ETH", "SOL", "BNB", "XRP"]
         res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-        return [r["symbol"] for r in res.data] if res.data else ["BTC", "ETH", "SOL", "BNB", "XRP"]
+        return [row["symbol"] for row in res.data] if res.data else ["BTC"]
     except:
-        return ["BTC", "ETH", "SOL", "BNB", "XRP"]
+        return ["BTC"]
 
 def add_coin(symbol):
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
         supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
         return True
     except:
         return False
 
 def remove_coin(symbol):
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
-        supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
-        return True
+        res = supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
+        return len(res.data) > 0
     except:
         return False
 
 def save_signal(data):
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
         data["timestamp"] = datetime.now().isoformat()
         supabase.table("signal_history").insert(data).execute()
         return True
-    except Exception as e:
+    except:
         return False
 
 def get_signal_history(limit=100):
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return []
         res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
-        return res.data or []
+        return res.data
     except:
         return []
-
-def save_trade(data):
-    try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
-        data["entry_time"] = datetime.now().isoformat()
-        data["status"] = "OPEN"
-        res = supabase.table("trades").insert(data).execute()
-        if res.data:
-            data["id"] = res.data[0]["id"]
-        return True
-    except Exception as e:
-        return False
-
-def get_trades(limit=100):
-    try:
-        supabase = get_supabase()
-        if supabase is None:
-            return []
-        res = supabase.table("trades").select("*").order("entry_time", desc=True).limit(limit).execute()
-        return res.data or []
-    except:
-        return []
-
-def update_trade(trade_id, updates):
-    try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
-        supabase.table("trades").update(updates).eq("id", trade_id).execute()
-        return True
-    except:
-        return False
 
 def update_performance(stats):
+    supabase = get_supabase()
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return False
         supabase.table("performance").upsert(
             {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()},
             on_conflict="key"
@@ -281,34 +176,82 @@ def update_performance(stats):
         return False
 
 def get_performance():
+    supabase = get_supabase()
+    default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
     try:
-        supabase = get_supabase()
-        if supabase is None:
-            return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
         res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
-        if res.data:
+        if res.data and len(res.data) > 0:
             return res.data[0]["value"]
-        default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
-        try:
-            supabase.table("performance").insert({"key": "performance_stats", "value": default}).execute()
-        except:
-            pass
         return default
     except:
-        return {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+        return default
 
 # =========================================================
-# TELEGRAM
+# TELEGRAM FUNCTIONS - ANTI DUPLICATE
 # =========================================================
-def send_telegram(message):
+if "sent_signals" not in st.session_state:
+    st.session_state.sent_signals = {}
+if "last_telegram_time" not in st.session_state:
+    st.session_state.last_telegram_time = {}
+
+def send_telegram_once(symbol, signal, result):
+    now = datetime.now()
+    # Cooldown 10 menit per coin
+    last_time = st.session_state.last_telegram_time.get(symbol)
+    if last_time is not None:
+        diff = (now - last_time).seconds / 60
+        if diff < 10:
+            return False
+
+    signal_key = f"{symbol}_{signal}_{now.strftime('%Y%m%d_%H%M')}"
+    if signal_key in st.session_state.sent_signals:
+        return False
+
+    try:
+        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+        if bot_token and chat_id:
+            msg = f"⚡ SIGNAL ALERT!\n\nCoin: {symbol}\nSignal: {signal}\nTime: {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            for tf in ["15m", "1h", "4h"]:
+                if tf in result.get("timeframes", {}):
+                    res = result["timeframes"][tf]
+                    msg += f"\n{tf.upper()}:\n"
+                    msg += f"  Action: {res.get('action', '')}\n"
+                    msg += f"  MACD: {res['macd']['dif']:.4f}\n"
+                    msg += f"  Hist: {res['macd']['histogram']:.4f}\n"
+                    msg += f"  Stoch K: {res['stoch']['k']:.1f}\n"
+                    msg += f"  Stoch D: {res['stoch']['d']:.1f}\n"
+                    msg += f"  RSI: {res['rsi']:.1f}\n"
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            response = requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=10)
+            if response.status_code == 200:
+                st.session_state.sent_signals[signal_key] = True
+                st.session_state.last_telegram_time[symbol] = now
+                # Cleanup
+                for key in list(st.session_state.sent_signals.keys()):
+                    try:
+                        ts_str = key.split('_')[-1]
+                        ts = datetime.strptime(ts_str, '%Y%m%d_%H%M')
+                        if (now - ts).seconds > 3600:
+                            del st.session_state.sent_signals[key]
+                    except:
+                        pass
+                return True
+    except Exception as e:
+        print(f"Telegram error: {e}")
+    return False
+
+def send_telegram_test(message):
     try:
         bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
         if bot_token and chat_id:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+            return True
     except:
         pass
+    return False
 
 # =========================================================
 # FORMAT PRICE
@@ -328,7 +271,7 @@ def format_price(value):
         return f"$ {value:,.8f}"
 
 # =========================================================
-# GET DATA
+# GET DATA (YAHOO FINANCE)
 # =========================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def get_data(symbol, interval, period):
@@ -360,7 +303,7 @@ def get_data_safe(symbol, interval, min_candles=20):
         "1d": ["30d", "60d", "90d", "1y"],
     }
     for period in periods.get(interval, ["7d", "14d", "30d"]):
-        df = get_data_cached(symbol, interval, period, cache_ttl=30)
+        df = get_data(symbol, interval, period)
         if df is not None and len(df) >= min_candles:
             return df
     return None
@@ -371,618 +314,330 @@ def get_data_safe(symbol, interval, min_candles=20):
 def EMA(df, period=20):
     return df["Close"].ewm(span=period, adjust=False).mean()
 
-def RSI(df, period=14):
+def MACD(df, fast=12, slow=26, signal=9):
+    ema_fast = EMA(df, fast)
+    ema_slow = EMA(df, slow)
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     delta = df["Close"].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
     avg_gain = gain.rolling(period).mean()
     avg_loss = loss.rolling(period).mean()
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-def MACD(df):
-    ema12 = EMA(df, 12)
-    ema26 = EMA(df, 26)
-    macd = ema12 - ema26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    hist = macd - signal
-    return macd, signal, hist
-
-def ATR(df, period=14):
-    high_low = df["High"] - df["Low"]
-    high_close = abs(df["High"] - df["Close"].shift())
-    low_close = abs(df["Low"] - df["Close"].shift())
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-def ADX(df, period=14):
-    try:
-        high = df["High"]
-        low = df["Low"]
-        close = df["Close"]
-        plus_dm = high.diff()
-        minus_dm = low.diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
-        tr = pd.concat([high - low, (high - close.shift()).abs(), (low - close.shift()).abs()], axis=1).max(axis=1)
-        atr = tr.rolling(period).mean()
-        plus_di = 100 * (plus_dm.rolling(period).mean() / atr)
-        minus_di = 100 * (minus_dm.abs().rolling(period).mean() / atr)
-        dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-        return dx.rolling(period).mean()
-    except:
-        return pd.Series([0] * len(df))
-
-def BollingerBands(df, period=20, std=2):
-    sma = df["Close"].rolling(period).mean()
-    rolling_std = df["Close"].rolling(period).std()
-    upper = sma + (rolling_std * std)
-    lower = sma - (rolling_std * std)
-    return upper, sma, lower
-
-def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
-    rsi = RSI(df, period)
+    rsi = 100 - (100 / (1 + rs))
     stoch_rsi = (rsi - rsi.rolling(period).min()) / (rsi.rolling(period).max() - rsi.rolling(period).min()) * 100
     k = stoch_rsi.rolling(smooth_k).mean()
     d = k.rolling(smooth_d).mean()
-    return k, d
+    return k, d, rsi
 
 # =========================================================
-# SMART MONEY CONCEPTS
+# ALGORITMA TRADING - MACD + STOCHASTIC RSI
 # =========================================================
-def find_order_blocks(df, lookback=20):
-    blocks = []
-    for i in range(lookback, len(df)-1):
-        if df['Close'].iloc[i] > df['Close'].iloc[i-1]:
-            high = df['High'].iloc[i-1]
-            low = df['Low'].iloc[i-1]
-            if df['High'].iloc[i] > high:
-                blocks.append({'type': 'BULLISH', 'high': float(high), 'low': float(low)})
-        elif df['Close'].iloc[i] < df['Close'].iloc[i-1]:
-            high = df['High'].iloc[i-1]
-            low = df['Low'].iloc[i-1]
-            if df['Low'].iloc[i] < low:
-                blocks.append({'type': 'BEARISH', 'high': float(high), 'low': float(low)})
-    return blocks[-3:] if len(blocks) > 3 else blocks
-
-def find_fair_value_gaps(df, lookback=20):
-    fvgs = []
-    for i in range(2, len(df)-1):
-        if df['Low'].iloc[i] > df['High'].iloc[i-2]:
-            fvgs.append({'type': 'BULLISH', 'high': float(df['Low'].iloc[i]), 'low': float(df['High'].iloc[i-2])})
-        elif df['High'].iloc[i] < df['Low'].iloc[i-2]:
-            fvgs.append({'type': 'BEARISH', 'high': float(df['Low'].iloc[i-2]), 'low': float(df['High'].iloc[i])})
-    return fvgs[-3:] if len(fvgs) > 3 else fvgs
-
-def find_liquidity_sweeps(df, lookback=20, buffer=0.01):
-    sweeps = []
-    recent_high = df['High'].tail(lookback).max()
-    recent_low = df['Low'].tail(lookback).min()
-    if df['High'].iloc[-1] > recent_high * (1 + buffer):
-        sweeps.append({'type': 'HIGH_SWEEP', 'level': float(recent_high), 'swept_at': float(df['High'].iloc[-1])})
-    if df['Low'].iloc[-1] < recent_low * (1 - buffer):
-        sweeps.append({'type': 'LOW_SWEEP', 'level': float(recent_low), 'swept_at': float(df['Low'].iloc[-1])})
-    return sweeps
-
-def detect_market_structure(df, lookback=10):
-    structure = {'hh': False, 'hl': False, 'lh': False, 'll': False, 'bos': False, 'choch': False}
-    if len(df) < lookback * 2:
-        return structure
-    highs = df['High'].tail(lookback).values
-    lows = df['Low'].tail(lookback).values
-    if highs[-1] > highs[-2] and highs[-2] > highs[-3]:
-        structure['hh'] = True
-    if lows[-1] > lows[-2] and lows[-2] > lows[-3]:
-        structure['hl'] = True
-    if highs[-1] < highs[-2] and highs[-2] < highs[-3]:
-        structure['lh'] = True
-    if lows[-1] < lows[-2] and lows[-2] < lows[-3]:
-        structure['ll'] = True
-    if structure['hh'] or structure['ll']:
-        structure['bos'] = True
-    if (structure['hh'] and lows[-1] > lows[-2]) or (structure['ll'] and highs[-1] < highs[-2]):
-        structure['choch'] = True
-    return structure
-
-def calculate_smart_money_score(df, lookback=20):
-    score = 50
-    reasons = []
-    obs = find_order_blocks(df, lookback)
-    if obs:
-        if obs[-1]['type'] == 'BULLISH':
-            score += 15
-            reasons.append("Bullish Order Block")
-        else:
-            score -= 15
-            reasons.append("Bearish Order Block")
-    fvgs = find_fair_value_gaps(df, lookback)
-    if fvgs:
-        if fvgs[-1]['type'] == 'BULLISH':
-            score += 15
-            reasons.append("Bullish FVG")
-        else:
-            score -= 15
-            reasons.append("Bearish FVG")
-    sweeps = find_liquidity_sweeps(df, lookback)
-    for sweep in sweeps:
-        if sweep['type'] == 'HIGH_SWEEP':
-            score += 10
-            reasons.append("Liquidity Sweep Up")
-        else:
-            score -= 10
-            reasons.append("Liquidity Sweep Down")
-    structure = detect_market_structure(df, lookback)
-    if structure.get('hh') and structure.get('hl'):
-        score += 10
-        reasons.append("Bullish Structure (HH+HL)")
-    elif structure.get('lh') and structure.get('ll'):
-        score -= 10
-        reasons.append("Bearish Structure (LH+LL)")
-    if structure.get('choch'):
-        score += 5 if score >= 50 else -5
-        reasons.append("Change of Character")
-    score = max(0, min(100, score))
-    return {'score': score, 'reasons': reasons}
-
-# =========================================================
-# ANALISIS TREND
-# =========================================================
-def analyze_trend(df, timeframe_name):
-    if df is None or len(df) < 20:
-        return "⚠️ Insufficient Data"
-    df = df.copy()
-    df["EMA20"] = EMA(df, 20)
-    df["EMA50"] = EMA(df, 50)
-    df["ADX"] = ADX(df)
+def analyze_macd_stoch(df, timeframe=""):
+    if df is None or len(df) < 30:
+        return None
+    macd_line, signal_line, histogram = MACD(df)
+    stoch_k, stoch_d, rsi = StochasticRSI(df)
+    ema20 = EMA(df, 20)
+    ema50 = EMA(df, 50)
+    
     last = df.iloc[-1]
     price = last["Close"]
-    ema20 = last["EMA20"] if not pd.isna(last["EMA20"]) else price
-    ema50 = last["EMA50"] if not pd.isna(last["EMA50"]) else price
-    adx = last["ADX"] if not pd.isna(last["ADX"]) else 0
-    if price > ema20 > ema50 and adx > 25:
-        return "🟢 BULLISH (Strong)"
-    elif price > ema20 > ema50:
-        return "🟢 BULLISH"
-    elif price < ema20 < ema50 and adx > 25:
-        return "🔴 BEARISH (Strong)"
-    elif price < ema20 < ema50:
-        return "🔴 BEARISH"
-    else:
-        return "🟡 SIDEWAYS"
-
-# =========================================================
-# ANALISIS MULTI TIMEFRAME
-# =========================================================
-def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
-    data = get_all_timeframes(symbol)
-    df_1d = data.get('1d')
-    df_4h = data.get('4h')
-    df_1h = data.get('1h')
-    df_15m = data.get('15m')
-    df_5m = data.get('5m')
+    volume = last["Volume"]
+    vol_ma = df["Volume"].rolling(10).mean().iloc[-1]
+    volume_ratio = volume / vol_ma if vol_ma > 0 else 1
     
-    if df_1h is None:
-        return None
-    if df_15m is None:
-        df_15m = df_1h.copy()
-    if df_5m is None:
-        df_5m = df_15m.copy()
-    if df_4h is None:
-        df_4h = df_1h.copy()
-    if df_1d is None:
-        df_1d = df_4h.copy()
-
-    trend_1h = analyze_trend(df_1h, "1H")
-    trend_15m = analyze_trend(df_15m, "15M")
-    trend_5m = analyze_trend(df_5m, "5M")
-    trend_4h = analyze_trend(df_4h, "4H")
-    trend_1d = analyze_trend(df_1d, "1D")
-
-    def get_macd_stoch_data(df):
-        if df is None or len(df) < 20:
-            return None
-        try:
-            macd, signal, hist = MACD(df)
-            k, d = StochasticRSI(df)
-            if macd.empty or k.empty:
-                return None
-            last_idx = -1
-            return {
-                'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
-                'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
-                'hist': float(hist.iloc[last_idx]) if not pd.isna(hist.iloc[last_idx]) else 0,
-                'stoch_k': float(k.iloc[last_idx]) if not pd.isna(k.iloc[last_idx]) else 50,
-                'stoch_d': float(d.iloc[last_idx]) if not pd.isna(d.iloc[last_idx]) else 50,
-                'macd_prev': float(macd.iloc[-2]) if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
-                'signal_prev': float(signal.iloc[-2]) if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
-                'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
-            }
-        except:
-            return None
+    macd_val = macd_line.iloc[-1]
+    signal_val = signal_line.iloc[-1]
+    hist_val = histogram.iloc[-1]
+    hist_prev = histogram.iloc[-2] if len(histogram) > 1 else hist_val
+    macd_prev = macd_line.iloc[-2] if len(macd_line) > 1 else macd_val
+    signal_prev = signal_line.iloc[-2] if len(signal_line) > 1 else signal_val
     
-    data_4h = get_macd_stoch_data(df_4h)
-    data_1h = get_macd_stoch_data(df_1h)
-    data_15m = get_macd_stoch_data(df_15m)
-    data_5m = get_macd_stoch_data(df_5m)
+    stoch_k_val = stoch_k.iloc[-1]
+    stoch_d_val = stoch_d.iloc[-1]
+    stoch_k_prev = stoch_k.iloc[-2] if len(stoch_k) > 1 else stoch_k_val
+    stoch_d_prev = stoch_d.iloc[-2] if len(stoch_d) > 1 else stoch_d_val
+    rsi_val = rsi.iloc[-1]
+    ema20_val = ema20.iloc[-1]
+    ema50_val = ema50.iloc[-1]
     
-    def check_buy_signal(d4, d1, d15):
-        if not d4 or not d1 or not d15:
-            return False
-        try:
-            if d4.get('macd', 0) <= 0:
-                return False
-            if d1.get('macd', 0) <= d1.get('signal', 0):
-                return False
-            if d15.get('macd', 0) <= d15.get('signal', 0):
-                return False
-            if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
-                return False
-            if d15.get('stoch_k', 50) < 20:
-                if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
-                    return False
-            return True
-        except:
-            return False
+    macd_golden_cross = (macd_prev < signal_prev) and (macd_val > signal_val)
+    macd_death_cross = (macd_prev > signal_prev) and (macd_val < signal_val)
+    stoch_golden_cross = (stoch_k_prev < stoch_d_prev) and (stoch_k_val > stoch_d_val)
+    stoch_death_cross = (stoch_k_prev > stoch_d_prev) and (stoch_k_val < stoch_d_val)
     
-    def check_sell_signal(d4, d1, d15):
-        if not d4 or not d1 or not d15:
-            return False
-        try:
-            if d4.get('macd', 0) >= 0:
-                return False
-            if d1.get('macd', 0) >= d1.get('signal', 0):
-                return False
-            if d15.get('macd', 0) >= d15.get('signal', 0):
-                return False
-            if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
-                return False
-            if d15.get('stoch_k', 50) > 80:
-                if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
-                    return False
-            return True
-        except:
-            return False
+    hist_increasing = hist_val > hist_prev
+    hist_decreasing = hist_val < hist_prev
+    hist_positive = hist_val > 0
+    hist_negative = hist_val < 0
     
-    entry_signal = None
-    is_buy = check_buy_signal(data_4h, data_1h, data_15m)
-    is_sell = check_sell_signal(data_4h, data_1h, data_15m)
+    bullish_trend = price > ema20_val > ema50_val
+    bearish_trend = price < ema20_val < ema50_val
+    volume_confirmed = volume_ratio > 1.2
     
-    buy_confirmations = 0
-    sell_confirmations = 0
+    buy_score = 0
+    sell_score = 0
+    reasons = []
     
-    if data_4h:
-        if data_4h.get('macd', 0) > 0: buy_confirmations += 1
-        if data_4h.get('macd', 0) < 0: sell_confirmations += 1
-    if data_1h:
-        if data_1h.get('macd', 0) > data_1h.get('signal', 0): buy_confirmations += 1
-        if data_1h.get('macd', 0) < data_1h.get('signal', 0): sell_confirmations += 1
-    if data_15m:
-        if data_15m.get('macd', 0) > data_15m.get('signal', 0): buy_confirmations += 1
-        if data_15m.get('macd', 0) < data_15m.get('signal', 0): sell_confirmations += 1
+    if macd_val > signal_val:
+        buy_score += 1
+    if hist_positive:
+        buy_score += 1
+    if macd_golden_cross:
+        buy_score += 2
+    if hist_increasing and hist_positive:
+        buy_score += 1
+    if stoch_k_val < 20 and stoch_d_val < 20:
+        buy_score += 2
+    elif 20 <= stoch_k_val <= 40 and stoch_k_val > stoch_d_val:
+        buy_score += 1
+    if stoch_golden_cross and stoch_k_val < 40:
+        buy_score += 2
+    if stoch_k_val > stoch_d_val:
+        buy_score += 0.5
+    if bullish_trend:
+        buy_score += 1
+    elif price > ema20_val:
+        buy_score += 0.5
+    if volume_confirmed:
+        buy_score += 0.5
+    if rsi_val < 70:
+        buy_score += 0.5
     
-    if is_buy and buy_confirmations >= min_confirmations:
-        if buy_confirmations == 3:
-            entry_signal = "🟢 STRONG BUY"
+    if macd_val < signal_val:
+        sell_score += 1
+    if hist_negative:
+        sell_score += 1
+    if macd_death_cross:
+        sell_score += 2
+    if hist_decreasing and hist_positive:
+        sell_score += 1
+    if stoch_k_val > 80 and stoch_d_val > 80:
+        sell_score += 2
+    elif 80 <= stoch_k_val <= 95:
+        sell_score += 1
+    if stoch_death_cross and stoch_k_val > 80:
+        sell_score += 2
+    if stoch_k_val < stoch_d_val:
+        sell_score += 0.5
+    if bearish_trend:
+        sell_score += 1
+    elif price < ema20_val:
+        sell_score += 0.5
+    if rsi_val > 30:
+        sell_score += 0.5
+    
+    action = "⏳ WAIT"
+    signal_type = "HOLD"
+    signal_strength = 0
+    if buy_score >= 5:
+        if buy_score >= 7 and stoch_golden_cross and macd_golden_cross:
+            signal_type = "⭐⭐⭐ STRONG BUY"
+            signal_strength = 3
+            action = "🟢 STRONG BUY"
+        elif buy_score >= 6 and (macd_golden_cross or stoch_golden_cross):
+            signal_type = "⭐⭐ BUY"
+            signal_strength = 2
+            action = "🟢 BUY"
         else:
-            entry_signal = "🟢 BUY"
-    elif is_sell and sell_confirmations >= min_confirmations:
-        if sell_confirmations == 3:
-            entry_signal = "🔴 STRONG SELL"
+            signal_type = "⭐ BUY"
+            signal_strength = 1
+            action = "🟢 BUY"
+    elif sell_score >= 5:
+        if sell_score >= 7 and stoch_death_cross and macd_death_cross:
+            signal_type = "⭐⭐⭐ STRONG SELL"
+            signal_strength = 3
+            action = "🔴 STRONG SELL"
+        elif sell_score >= 6 and (macd_death_cross or stoch_death_cross):
+            signal_type = "⭐⭐ SELL"
+            signal_strength = 2
+            action = "🔴 SELL"
         else:
-            entry_signal = "🔴 SELL"
+            signal_type = "⭐ SELL"
+            signal_strength = 1
+            action = "🔴 SELL"
+    elif stoch_k_val > 85 and hist_decreasing and hist_positive:
+        signal_type = "💰 TAKE PROFIT"
+        signal_strength = 2
+        action = "💰 TAKE PROFIT"
+        reasons = ["Stoch >85", "Histogram mulai mengecil"]
     else:
-        entry_signal = "⏳ WAIT"
-    
-    if "BUY" in entry_signal or "SELL" in entry_signal:
-        entry_price = df_5m["Close"].iloc[-1]
-        atr_value = ATR(df_5m, period=20).iloc[-1] if len(ATR(df_5m, period=20)) > 0 else 0.01
-        min_atr = entry_price * 0.005
-        atr_value = max(atr_value, min_atr)
-        if "BUY" in entry_signal:
-            stop_loss = entry_price - atr_value * rr_sl
-            take_profit = entry_price + atr_value * rr_tp
+        if macd_val > signal_val and 20 <= stoch_k_val <= 80:
+            signal_type = "🟡 HOLD"
+            action = "🟡 HOLD"
+        elif macd_val > signal_val and stoch_k_val < 20:
+            signal_type = "🟡 WAIT (Stoch oversold, tunggu golden cross)"
+            action = "⏳ WAIT"
+        elif macd_val < signal_val and stoch_k_val > 80:
+            signal_type = "🟡 WAIT (Stoch overbought, tunggu death cross)"
+            action = "⏳ WAIT"
         else:
-            stop_loss = entry_price + atr_value * rr_sl
-            take_profit = entry_price - atr_value * rr_tp
-    else:
-        entry_price = stop_loss = take_profit = None
-        atr_value = 0.01
-    
-    sm_data = calculate_smart_money_score(df_5m)
-    
-    macd_score = 50 + (buy_confirmations - sell_confirmations) * 15
-    macd_score = max(0, min(100, macd_score))
-    total_score = (sm_data['score'] * 0.7 + macd_score * 0.3)
-    total_score = max(0, min(100, total_score))
+            signal_type = "🟡 HOLD / WAIT"
+            action = "⏳ WAIT"
     
     return {
-        "symbol": symbol,
-        "trend_1h": trend_1h,
-        "trend_15m": trend_15m,
-        "trend_5m": trend_5m,
-        "trend_4h": trend_4h,
-        "trend_1d": trend_1d,
-        "macd_4h": data_4h['macd'] if data_4h and 'macd' in data_4h else 0,
-        "macd_1h": data_1h['macd'] if data_1h and 'macd' in data_1h else 0,
-        "macd_15m": data_15m['macd'] if data_15m and 'macd' in data_15m else 0,
-        "stoch_k_4h": data_4h['stoch_k'] if data_4h and 'stoch_k' in data_4h else 50,
-        "stoch_k_1h": data_1h['stoch_k'] if data_1h and 'stoch_k' in data_1h else 50,
-        "stoch_k_15m": data_15m['stoch_k'] if data_15m and 'stoch_k' in data_15m else 50,
-        "stoch_d_4h": data_4h['stoch_d'] if data_4h and 'stoch_d' in data_4h else 50,
-        "stoch_d_1h": data_1h['stoch_d'] if data_1h and 'stoch_d' in data_1h else 50,
-        "stoch_d_15m": data_15m['stoch_d'] if data_15m and 'stoch_d' in data_15m else 50,
-        "buy_confirmations": buy_confirmations,
-        "sell_confirmations": sell_confirmations,
-        "confirmations": max(buy_confirmations, sell_confirmations),
-        "entry_signal": entry_signal,
-        "entry_price": entry_price,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-        "rsi_5m": 50,
-        "rsi_15m": 50,
-        "price": df_5m["Close"].iloc[-1],
-        "atr": atr_value,
-        "smart_money": sm_data,
-        "total_score": total_score,
-        "df_1h": df_1h.tail(50),
-        "df_15m": df_15m.tail(50),
-        "df_5m": df_5m.tail(30)
+        "symbol": None,
+        "timeframe": timeframe,
+        "action": action,
+        "signal_type": signal_type,
+        "signal_strength": signal_strength,
+        "score": {"buy": buy_score, "sell": sell_score},
+        "reasons": reasons if action in ["BUY", "STRONG BUY"] else [],
+        "macd": {
+            "dif": macd_val,
+            "dea": signal_val,
+            "histogram": hist_val,
+            "histogram_prev": hist_prev,
+            "golden_cross": macd_golden_cross,
+            "death_cross": macd_death_cross,
+            "hist_increasing": hist_increasing,
+            "hist_decreasing": hist_decreasing,
+            "hist_positive": hist_positive,
+            "hist_negative": hist_negative
+        },
+        "stoch": {
+            "k": stoch_k_val,
+            "d": stoch_d_val,
+            "golden_cross": stoch_golden_cross,
+            "death_cross": stoch_death_cross,
+            "k_prev": stoch_k_prev,
+            "d_prev": stoch_d_prev
+        },
+        "rsi": rsi_val,
+        "ema20": ema20_val,
+        "ema50": ema50_val,
+        "price": price,
+        "volume_ratio": volume_ratio,
+        "bullish_trend": bullish_trend,
+        "bearish_trend": bearish_trend
     }
+
+# =========================================================
+# MULTI TIMEFRAME ANALYSIS
+# =========================================================
+def analyze_mtf_macd_stoch(symbol, timeframes=["15m", "1h", "4h"]):
+    results = {}
+    for tf in timeframes:
+        df = get_data_safe(symbol, tf, min_candles=50)
+        if df is not None:
+            result = analyze_macd_stoch(df, tf)
+            if result:
+                result["symbol"] = symbol
+                results[tf] = result
+    if not results:
+        return None
+    combined = {"symbol": symbol, "timeframes": results}
+    buy_count = 0
+    sell_count = 0
+    hold_count = 0
+    for tf in ["4h", "1h", "15m"]:
+        if tf in results:
+            res = results[tf]
+            if "BUY" in res["action"]:
+                buy_count += 1
+            elif "SELL" in res["action"]:
+                sell_count += 1
+            else:
+                hold_count += 1
+    main_signal = "⏳ WAIT"
+    main_strength = 0
+    if buy_count >= 2:
+        main_signal = "🟢 STRONG BUY (Multi TF)"
+        main_strength = 3
+    elif buy_count == 1 and hold_count >= 1:
+        main_signal = "🟢 BUY"
+        main_strength = 2
+    elif sell_count >= 2:
+        main_signal = "🔴 STRONG SELL (Multi TF)"
+        main_strength = 3
+    elif sell_count == 1 and hold_count >= 1:
+        main_signal = "🔴 SELL"
+        main_strength = 2
+    else:
+        main_signal = "🟡 HOLD / WAIT"
+        main_strength = 1
+    combined["main_signal"] = main_signal
+    combined["main_strength"] = main_strength
+    combined["buy_count"] = buy_count
+    combined["sell_count"] = sell_count
+    combined["hold_count"] = hold_count
+    return combined
 
 # =========================================================
 # CREATE CHART
 # =========================================================
-def create_chart(result, symbol):
+def create_chart(df, symbol, timeframe):
+    if df is None or len(df) < 30:
+        return None
+    macd_line, signal_line, histogram = MACD(df)
+    stoch_k, stoch_d, rsi = StochasticRSI(df)
+    ema20 = EMA(df, 20)
+    ema50 = EMA(df, 50)
     fig = make_subplots(
-        rows=5, cols=1,
+        rows=4, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.35, 0.2, 0.15, 0.15, 0.15],
-        subplot_titles=("Price & Indicators (5M)", "RSI + BB (15M)", "MACD (15M)", "Stochastic (15M)", "Volume")
+        vertical_spacing=0.03,
+        row_heights=[0.35, 0.2, 0.25, 0.2],
+        subplot_titles=(f"Price - {symbol} {timeframe}", "RSI", "MACD", "Stochastic RSI")
     )
-    
-    df = result["df_5m"]
-    df_15m = result["df_15m"].copy()
-    
-    df_15m["RSI"] = RSI(df_15m, 14)
-    macd, signal, hist = MACD(df_15m)
-    df_15m["MACD"] = macd
-    df_15m["MACD_SIGNAL"] = signal
-    df_15m["MACD_HIST"] = hist
-    bb_upper, bb_mid, bb_lower = BollingerBands(df_15m)
-    df_15m["BB_UPPER"] = bb_upper
-    df_15m["BB_MIDDLE"] = bb_mid
-    df_15m["BB_LOWER"] = bb_lower
-    k, d = StochasticRSI(df_15m)
-    df_15m["STOCH_K"] = k
-    df_15m["STOCH_D"] = d
-    
-    fig.add_trace(
-        go.Candlestick(
-            x=df["Time"],
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            increasing_line_color="#00ff88",
-            decreasing_line_color="#ff3b5c",
-            name="Price (5M)"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=df["Close"].ewm(span=20).mean(),
-            line=dict(color="#00a2ff", width=1.5),
-            name="EMA20"
-        ),
-        row=1, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=df["Close"].ewm(span=50).mean(),
-            line=dict(color="#ffaa00", width=1.5, dash="dash"),
-            name="EMA50"
-        ),
-        row=1, col=1
-    )
-    
-    if result["entry_signal"] and result["entry_price"]:
-        fig.add_hline(y=result["entry_price"], line_dash="solid", line_color="#00ff88", row=1, col=1)
-        if result["stop_loss"]:
-            fig.add_hline(y=result["stop_loss"], line_dash="dash", line_color="#ff0000", row=1, col=1)
-        if result["take_profit"]:
-            fig.add_hline(y=result["take_profit"], line_dash="dash", line_color="#00ff00", row=1, col=1)
-    
-    fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"),
-        row=2, col=1
-    )
+    fig.add_trace(go.Candlestick(x=df["Time"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+                                 increasing_line_color="#00ff88", decreasing_line_color="#ff3b5c", name="Price"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=ema20, line=dict(color="#00a2ff", width=1.5), name="EMA20"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=ema50, line=dict(color="#ffaa00", width=1.5, dash="dash"), name="EMA50"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=rsi, line=dict(color="#a855f7", width=2), name="RSI"), row=2, col=1)
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-    
-    fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=df_15m["MACD"], line=dict(color="#00a2ff", width=1.5), name="MACD"),
-        row=3, col=1
-    )
-    fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=df_15m["MACD_SIGNAL"], line=dict(color="#ff00ff", width=1.5), name="Signal"),
-        row=3, col=1
-    )
-    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in df_15m["MACD_HIST"]]
-    fig.add_trace(
-        go.Bar(x=df_15m["Time"], y=df_15m["MACD_HIST"], marker_color=colors, opacity=0.4, name="Histogram"),
-        row=3, col=1
-    )
-    
-    fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
-        row=4, col=1
-    )
-    fig.add_trace(
-        go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_D"], line=dict(color="#ff00ff", width=1.5), name="Stoch D"),
-        row=4, col=1
-    )
+    fig.add_trace(go.Scatter(x=df["Time"], y=macd_line, line=dict(color="#00a2ff", width=1.5), name="DIF (MACD)"), row=3, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=signal_line, line=dict(color="#ff00ff", width=1.5), name="DEA (Signal)"), row=3, col=1)
+    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in histogram]
+    fig.add_trace(go.Bar(x=df["Time"], y=histogram, marker_color=colors, opacity=0.5, name="Histogram"), row=3, col=1)
+    fig.add_hline(y=0, line_dash="solid", line_color="rgba(255,255,255,0.2)", row=3, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=stoch_k, line=dict(color="#ffaa00", width=1.5), name="Stoch K"), row=4, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=stoch_d, line=dict(color="#ff00ff", width=1.5, dash="dash"), name="Stoch D"), row=4, col=1)
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
-    
-    colors_vol = ["#00ff88" if c >= o else "#ff3b5c" for c, o in zip(df["Close"], df["Open"])]
-    fig.add_trace(
-        go.Bar(x=df["Time"], y=df["Volume"], marker_color=colors_vol, opacity=0.5, name="Volume"),
-        row=5, col=1
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["Time"],
-            y=df["Volume"].rolling(5).mean(),
-            line=dict(color="rgba(255,255,255,0.3)", width=1),
-            name="Volume MA"
-        ),
-        row=5, col=1
-    )
-    
-    fig.update_layout(
-        template="plotly_dark",
-        height=1100,
-        title=dict(
-            text=f"<b>{symbol} - Multi Timeframe Analysis</b>",
-            font=dict(color="#f1f5f9", size=22),
-            x=0.5,
-            xanchor="center"
-        ),
-        hovermode="x unified",
-        dragmode="pan",
-        xaxis_rangeslider_visible=False,
-        paper_bgcolor="#0a0a1a",
-        plot_bgcolor="#0a0a1a",
-        font=dict(color="#94a3b8"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-        margin=dict(l=10, r=10, t=50, b=10)
-    )
+    fig.update_layout(template="plotly_dark", height=900,
+                      title=dict(text=f"<b>{symbol} - {timeframe} Analysis</b>", font=dict(color="#f1f5f9", size=20),
+                                 x=0.5, xanchor="center"),
+                      hovermode="x unified", dragmode="pan", xaxis_rangeslider_visible=False,
+                      paper_bgcolor="#0a0a1a", plot_bgcolor="#0a0a1a", font=dict(color="#94a3b8"),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
+                      margin=dict(l=10, r=10, t=50, b=10))
     fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
     fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
     return fig
-
-# =========================================================
-# EXECUTE TRADE
-# =========================================================
-def execute_trade(symbol, df, balance=10000, position_size=100, leverage=10):
-    result = analyze_mtf(symbol)
-    if not result or not result["entry_signal"] or "WAIT" in result["entry_signal"]:
-        return None
-    
-    entry_price = result["entry_price"]
-    stop_loss = result["stop_loss"]
-    take_profit = result["take_profit"]
-    
-    if not entry_price or not stop_loss or not take_profit:
-        return None
-    
-    trade = {
-        'symbol': symbol,
-        'type': 'BUY' if 'BUY' in result["entry_signal"] else 'SELL',
-        'entry_price': entry_price,
-        'stop_loss': stop_loss,
-        'take_profit': take_profit,
-        'position_size': position_size,
-        'leverage': leverage,
-        'score': result['total_score'],
-        'confidence': result.get('confirmations', 1) / 3 * 100,
-        'signal': result["entry_signal"],
-        'status': 'OPEN',
-        'entry_time': datetime.now().isoformat(),
-        'smart_money_score': result['smart_money']['score'],
-    }
-    
-    save_trade(trade)
-    return trade
-
-# =========================================================
-# MONITOR POSITIONS
-# =========================================================
-def monitor_positions():
-    trades = get_trades()
-    open_trades = [t for t in trades if t.get('status') == 'OPEN']
-    
-    for trade in open_trades:
-        symbol = trade['symbol']
-        ticker = yf.Ticker(f"{symbol}-USD")
-        df = ticker.history(period="1d", interval="5m")
-        if df.empty:
-            continue
-        current_price = df['Close'].iloc[-1]
-        
-        entry = trade['entry_price']
-        sl = trade['stop_loss']
-        tp = trade['take_profit']
-        
-        closed = False
-        profit_pct = 0
-        exit_price = current_price
-        
-        if trade['type'] == 'BUY':
-            if current_price <= sl:
-                profit_pct = (current_price / entry - 1) * 100
-                closed = True
-            elif current_price >= tp:
-                profit_pct = (current_price / entry - 1) * 100
-                closed = True
-        else:
-            if current_price >= sl:
-                profit_pct = (entry / current_price - 1) * 100
-                closed = True
-            elif current_price <= tp:
-                profit_pct = (entry / current_price - 1) * 100
-                closed = True
-        
-        if closed:
-            updates = {
-                'status': 'CLOSED',
-                'exit_price': exit_price,
-                'profit_pct': profit_pct,
-                'exit_time': datetime.now().isoformat()
-            }
-            
-            update_trade(trade['id'], updates)
-            
-            msg = f"{'✅' if profit_pct > 0 else '❌'} {symbol} Closed: {profit_pct:.2f}%"
-            send_telegram(msg)
 
 # =========================================================
 # INITIALIZATION
 # =========================================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = get_watchlist()
-
-if "selected_coin" not in st.session_state:
-    st.session_state.selected_coin = st.session_state.watchlist[0] if st.session_state.watchlist else "BTC"
-
 if "pending_signal" not in st.session_state:
     st.session_state.pending_signal = {}
-
 if "signal_history" not in st.session_state:
     st.session_state.signal_history = get_signal_history()
-
 if "performance_stats" not in st.session_state:
     st.session_state.performance_stats = get_performance()
 
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖 Crypto Bot PRO")
-st.caption("Multi Timeframe: 1D | 4H | 1H | 15M | 5M | Smart Money | Auto Trading")
+st.title("🤖 Crypto Bot PRO - MACD + Stoch RSI")
+st.caption("Multi Timeframe: 15M | 1H | 4H | MACD + Stochastic RSI + EMA + Volume")
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 with st.sidebar:
     st.header("⚙️ Settings")
-    
     st.subheader("📋 Watchlist")
     st.success("☁️ Supabase Connected")
-    
     col_add1, col_add2 = st.columns([3, 1])
     with col_add1:
         new_coin = st.text_input("Add Coin", placeholder="BTC", label_visibility="collapsed")
@@ -998,7 +653,6 @@ with st.sidebar:
                         st.error("❌ Gagal tambah coin!")
                 else:
                     st.warning(f"⚠️ {coin} already exists!")
-    
     st.markdown("**Your Coins:**")
     cols = st.columns(3)
     for idx, coin in enumerate(st.session_state.watchlist):
@@ -1010,38 +664,20 @@ with st.sidebar:
                     st.rerun()
                 else:
                     st.error(f"❌ Gagal hapus {coin}!")
-    
     st.divider()
-    
     st.subheader("📊 Trading Settings")
     refresh = st.slider("🔄 Refresh (detik)", 10, 60, 30)
-    leverage = st.slider("⚡ Leverage", 1, 125, 10)
-    position_size = st.number_input("💰 Position Size (USD)", 10, 100000, 100, step=10)
-    
-    rr_sl = st.slider("Stop Loss (ATR)", 1.0, 5.0, 3.0, 0.5)
-    rr_tp = st.slider("Take Profit (ATR)", 3.0, 12.0, 7.0, 0.5)
-    use_trailing = st.toggle("🚀 Use Trailing Stop", value=True)
-    
-    hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15)
-    buffer_pct = st.slider("Buffer Level (%)", 0.1, 1.0, 0.5, 0.1)
-    confirmation_candles = st.slider("Konfirmasi Candle", 1, 5, 3)
-    min_confirmations = st.slider("Min Konfirmasi", 1, 3, 2)
-    
+    hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15, key="hold_minutes")
     st.divider()
-    
     st.subheader("📱 Telegram Alert")
     if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram("🚀 Telegram Connected! Scanner PRO Aktif.")
+        send_telegram_test("🚀 Telegram Connected! Scanner PRO Aktif.")
         st.success("✅ Pesan test terkirim!")
-    
     st.divider()
-    
     st.subheader("📊 Status")
     st.metric("Total Coins", len(st.session_state.watchlist))
-    st.metric("Storage", "☁️ Supabase")
-    st.metric("Pending Signals", len(st.session_state.pending_signal))
     stats = get_performance()
-    st.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
+    st.metric("Total Signals", stats.get('total_signals', 0))
     st.caption(f"🔄 Auto Refresh: {refresh} detik")
 
 # =========================================================
@@ -1052,349 +688,248 @@ st_autorefresh(interval=refresh * 1000, key="refresh")
 # =========================================================
 # MAIN TABS
 # =========================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Scanner", "📈 Smart Money", "📋 Trades", "📜 History", "📊 Performance"
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Scanner", "📈 Chart Analysis", "📋 History", "📊 Performance"
 ])
 
 # ==================== TAB 1: SCANNER ====================
 with tab1:
-    st.subheader("📊 Signal Summary")
-    
+    st.subheader("📊 Signal Scanner - MACD + Stochastic RSI")
+    all_signals = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    # Hapus pending signal yang kadaluarsa
     current_time = datetime.now()
-    expired_signals = []
+    expired = []
     for symbol, data in st.session_state.pending_signal.items():
         elapsed = (current_time - data["time"]).seconds / 60
         if elapsed > hold_minutes:
-            expired_signals.append(symbol)
-    
-    for symbol in expired_signals:
-        del st.session_state.pending_signal[symbol]
-    
-    # Container untuk menampilkan progress
-    progress_container = st.container()
-    with progress_container:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-    
-    all_signals = []
-    
-    # Proses scanning
-    watchlist = st.session_state.watchlist[:20]  # Batasi 20 coin
-    
-    for idx, symbol in enumerate(watchlist):
-        progress_bar.progress((idx + 1) / len(watchlist))
+            expired.append(symbol)
+    for sym in expired:
+        del st.session_state.pending_signal[sym]
+
+    for idx, symbol in enumerate(st.session_state.watchlist[:20]):
+        progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:20]))
         status_text.text(f"🔄 Scanning {symbol}...")
-        
-        try:
-            result = analyze_mtf(symbol, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
-        except Exception as e:
-            # Tambahkan error ke log
-            all_signals.append({
-                "Coin": symbol,
-                "Trend 1D": "❌ ERROR",
-                "Trend 4H": "-",
-                "Trend 1H": "-",
-                "Trend 15M": "-",
-                "Trend 5M": "-",
-                "Signal": "⏳ ERROR",
-                "Score": "0",
-                "MACD 4H": "-",
-                "MACD 1H": "-",
-                "MACD 15M": "-",
-                "Stoch 4H": "-",
-                "Stoch 1H": "-",
-                "Stoch 15M": "-",
-                "SM Score": "-",
-                "Confirm": "-"
-            })
-            continue
-        
+        result = analyze_mtf_macd_stoch(symbol, ["15m", "1h", "4h"])
         if result:
-            pending = st.session_state.pending_signal.get(symbol)
-            if pending:
-                entry_display = pending["signal"]
-                is_pending = True
-            else:
-                entry_display = result["entry_signal"] if result["entry_signal"] else "⏳ WAIT"
-                is_pending = False
-            
-            # Cek sinyal baru
-            if result["entry_signal"] and "WAIT" not in result["entry_signal"] and symbol not in st.session_state.pending_signal:
-                st.session_state.pending_signal[symbol] = {
-                    "signal": result["entry_signal"],
-                    "time": datetime.now(),
-                    "entry": result["entry_price"],
-                    "sl": result["stop_loss"],
-                    "tp": result["take_profit"]
-                }
-                
-                # Simpan ke database
-                save_signal({
-                    'symbol': symbol,
-                    'signal': result["entry_signal"],
-                    'entry_price': result["entry_price"],
-                    'stop_loss': result["stop_loss"],
-                    'take_profit': result["take_profit"],
-                    'trend_1h': result["trend_1h"],
-                    'trend_15m': result["trend_15m"],
-                    'score': result['total_score'],
-                    'confidence': result.get('confirmations', 1) / 3 * 100,
-                    'smart_money_score': result['smart_money']['score']
-                })
-                
-                # Update performance
-                stats = get_performance()
-                stats['total_signals'] = stats.get('total_signals', 0) + 1
-                update_performance(stats)
-                
-                # Kirim Telegram
-                if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
-                    if result["take_profit"] and result["stop_loss"] and result["entry_price"]:
-                        rr = ((result["take_profit"] / result["entry_price"] - 1) / 
-                              (result["stop_loss"] / result["entry_price"] - 1)) if result["stop_loss"] else 0
-                        msg = f"⚡ NEW SIGNAL!\n\nCoin: {symbol}\nSignal: {result['entry_signal']}\nEntry: ${result['entry_price']:.4f}\nSL: ${result['stop_loss']:.4f}\nTP: ${result['take_profit']:.4f}\nRR Ratio: {rr:.2f}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                        send_telegram(msg)
-            
-            # Tambahkan ke list
-            all_signals.append({
+            signal_data = {
                 "Coin": symbol,
-                "Trend 1D": result.get("trend_1d", "-"),
-                "Trend 4H": result.get("trend_4h", "-"),
-                "Trend 1H": result["trend_1h"],
-                "Trend 15M": result["trend_15m"],
-                "Trend 5M": result["trend_5m"],
-                "Signal": "🟡 PENDING" if is_pending else entry_display,
-                "Score": f"{result['total_score']:.0f}",
-                "MACD 4H": f"{result.get('macd_4h', 0):.4f}",
-                "MACD 1H": f"{result.get('macd_1h', 0):.4f}",
-                "MACD 15M": f"{result.get('macd_15m', 0):.4f}",
-                "Stoch 4H": f"{result.get('stoch_k_4h', 50):.1f}",
-                "Stoch 1H": f"{result.get('stoch_k_1h', 50):.1f}",
-                "Stoch 15M": f"{result.get('stoch_k_15m', 50):.1f}",
-                "SM Score": f"{result['smart_money']['score']}",
-                "Confirm": f"{result.get('confirmations', 0)}/3"
-            })
-        else:
-            all_signals.append({
-                "Coin": symbol,
-                "Trend 1D": "⏳ NO DATA",
-                "Trend 4H": "-",
-                "Trend 1H": "-",
-                "Trend 15M": "-",
-                "Trend 5M": "-",
-                "Signal": "⏳ NO DATA",
-                "Score": "0",
-                "MACD 4H": "-",
-                "MACD 1H": "-",
-                "MACD 15M": "-",
-                "Stoch 4H": "-",
-                "Stoch 1H": "-",
-                "Stoch 15M": "-",
-                "SM Score": "-",
-                "Confirm": "-"
-            })
-    
-    # Hapus progress bar
-    progress_container.empty()
-    
-    # TAMPILKAN TABEL
+                "Signal": result["main_signal"],
+                "Strength": "⭐" * result.get("main_strength", 1),
+            }
+            for tf in ["15m", "1h", "4h"]:
+                if tf in result["timeframes"]:
+                    res = result["timeframes"][tf]
+                    signal_data[f"{tf.upper()} Action"] = res["action"]
+                    signal_data[f"{tf.upper()} MACD"] = f"{res['macd']['dif']:.4f}"
+                    signal_data[f"{tf.upper()} Hist"] = f"{res['macd']['histogram']:.4f}"
+                    signal_data[f"{tf.upper()} Stoch K"] = f"{res['stoch']['k']:.1f}"
+                    signal_data[f"{tf.upper()} Stoch D"] = f"{res['stoch']['d']:.1f}"
+                    signal_data[f"{tf.upper()} RSI"] = f"{res['rsi']:.1f}"
+            all_signals.append(signal_data)
+
+            # Simpan pending signal jika sinyal kuat (BUY/SELL)
+            if result["main_strength"] >= 2 and ("BUY" in result["main_signal"] or "SELL" in result["main_signal"]):
+                # Hitung entry, TP, SL sederhana (gunakan harga terakhir 5M)
+                df_5m = get_data_safe(symbol, "5m", min_candles=20)
+                if df_5m is not None:
+                    price = df_5m["Close"].iloc[-1]
+                    # Menggunakan ATR untuk SL/TP
+                    atr = AverageTrueRange(df_5m["High"], df_5m["Low"], df_5m["Close"], window=14).average_true_range().iloc[-1]
+                    if pd.isna(atr) or atr == 0:
+                        atr = price * 0.01
+                    if "BUY" in result["main_signal"]:
+                        entry = price
+                        sl = entry - atr * 3
+                        tp = entry + atr * 7
+                    else:
+                        entry = price
+                        sl = entry + atr * 3
+                        tp = entry - atr * 7
+                    # Simpan ke pending jika belum ada
+                    if symbol not in st.session_state.pending_signal:
+                        st.session_state.pending_signal[symbol] = {
+                            "signal": result["main_signal"],
+                            "time": datetime.now(),
+                            "entry": entry,
+                            "sl": sl,
+                            "tp": tp,
+                            "timeframe": "5m"
+                        }
+                        # Kirim telegram sekali
+                        sent = send_telegram_once(symbol, result["main_signal"], result)
+                        if sent:
+                            save_signal({
+                                'symbol': symbol,
+                                'signal': result["main_signal"],
+                                'timestamp': datetime.now().isoformat()
+                            })
+                            stats = get_performance()
+                            stats['total_signals'] = stats.get('total_signals', 0) + 1
+                            update_performance(stats)
+
+    progress_bar.empty()
+    status_text.empty()
+
     if all_signals:
-        st.markdown("### 📋 Signal Table")
-        
-        # Buat dataframe
         df_signals = pd.DataFrame(all_signals)
-        
-        # Konversi Score ke numeric untuk sorting
-        df_signals['Score_Num'] = pd.to_numeric(df_signals['Score'], errors='coerce').fillna(0)
-        df_signals = df_signals.sort_values('Score_Num', ascending=False)
-        df_signals = df_signals.drop(columns=['Score_Num'])
-        
-        # Tampilkan tabel dengan styling
-        st.dataframe(
-            df_signals,
-            use_container_width=True,
-            hide_index=True,
-            height=400
-        )
-        
-        # Tampilkan statistik
-        st.divider()
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Coins Scanned", len(all_signals))
-        
-        # Hitung sinyal aktif
-        active_signals = [s for s in all_signals if 'BUY' in s['Signal'] or 'SELL' in s['Signal']]
-        col2.metric("Active Signals", len(active_signals))
-        
-        # Best signal
-        best_signals = [s for s in all_signals if 'BUY' in s['Signal'] or 'SELL' in s['Signal']]
-        if best_signals:
-            best = best_signals[0]
-            col3.metric("Best Signal", f"{best['Coin']} - {best['Signal']}")
-            col4.metric("Best Score", best['Score'])
-        else:
-            col3.metric("Best Signal", "No active signal")
-            col4.metric("Best Score", "0")
-        
-        # Tampilkan coin dengan skor tertinggi
-        top_coins = df_signals.nlargest(3, 'Score')['Coin'].tolist()
-        if top_coins:
-            st.info(f"🏆 Top Coins: {', '.join(top_coins)}")
+        st.dataframe(df_signals, use_container_width=True, hide_index=True)
+        # Tampilkan best signal
+        buy_signals = [s for s in all_signals if "BUY" in s["Signal"]]
+        if buy_signals:
+            best = buy_signals[0]
+            st.success(f"🏆 Best Buy Signal: **{best['Coin']}** | {best['Signal']}")
     else:
-        st.warning("⚠️ Tidak ada data yang berhasil di-scan. Periksa koneksi internet atau coba refresh.")
-    
-    # Pending Signals
+        st.info("ℹ️ Tidak ada data")
+
+    # ========== TAMPILAN PENDING SIGNALS (DENGAN ENTRY, TP, SL) ==========
     if st.session_state.pending_signal:
         st.divider()
-        st.subheader("⏳ Pending Signals (Aktif)")
-        st.caption(f"Sinyal akan bertahan selama {hold_minutes} menit")
-        
+        st.subheader("⏳ Pending Signals - Entry, TP, SL")
+        st.caption("Sinyal yang masih aktif menunggu eksekusi")
+        pending_data = []
+        for symbol, data in st.session_state.pending_signal.items():
+            elapsed = (datetime.now() - data["time"]).seconds / 60
+            remaining = max(0, hold_minutes - elapsed)
+            entry = data.get("entry")
+            sl = data.get("sl")
+            tp = data.get("tp")
+            if entry and sl and tp:
+                if "BUY" in data["signal"]:
+                    rr = (tp - entry) / (entry - sl) if (entry - sl) != 0 else 0
+                else:
+                    rr = (entry - tp) / (sl - entry) if (sl - entry) != 0 else 0
+            else:
+                rr = 0
+            pending_data.append({
+                "Coin": symbol,
+                "Signal": data["signal"],
+                "Entry": format_price(entry),
+                "TP": format_price(tp),
+                "SL": format_price(sl),
+                "RR": f"{rr:.2f}",
+                "Time Left": f"{remaining:.0f}m",
+                "Timeframe": data.get("timeframe", "5m")
+            })
+        if pending_data:
+            df_pending = pd.DataFrame(pending_data)
+            st.dataframe(df_pending, use_container_width=True, hide_index=True)
+        # Card per coin
+        st.caption("Detail per coin:")
         cols = st.columns(min(len(st.session_state.pending_signal), 4))
         for idx, (symbol, data) in enumerate(st.session_state.pending_signal.items()):
             col_idx = idx % len(cols)
             with cols[col_idx]:
                 elapsed = (datetime.now() - data["time"]).seconds / 60
                 remaining = max(0, hold_minutes - elapsed)
-                if data["entry"] and data["sl"] and data["tp"]:
-                    rr = ((data["tp"] / data["entry"] - 1) / (data["sl"] / data["entry"] - 1)) if data["sl"] else 0
+                entry = data.get("entry")
+                sl = data.get("sl")
+                tp = data.get("tp")
+                if entry and sl and tp:
+                    if "BUY" in data["signal"]:
+                        rr = (tp - entry) / (entry - sl) if (entry - sl) != 0 else 0
+                    else:
+                        rr = (entry - tp) / (sl - entry) if (sl - entry) != 0 else 0
                 else:
                     rr = 0
                 st.markdown(f"""
                 <div class="pending-signal">
                     <b>{symbol}</b><br>
                     {data['signal']}<br>
-                    Entry: {format_price(data['entry'])}<br>
-                    SL: {format_price(data['sl'])}<br>
-                    TP: {format_price(data['tp'])}<br>
-                    RR: {rr:.2f}<br>
+                    📈 Entry: {format_price(entry)}<br>
+                    🎯 TP: {format_price(tp)}<br>
+                    🛑 SL: {format_price(sl)}<br>
+                    📊 RR: {rr:.2f}<br>
                     ⏱️ {remaining:.0f}m remaining
                 </div>
                 """, unsafe_allow_html=True)
 
-# ==================== TAB 2: SMART MONEY ====================
+# ==================== TAB 2: CHART ANALYSIS ====================
 with tab2:
-    st.subheader("📈 Smart Money Concepts Analysis")
-    
-    sm_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="sm_select")
-    
-    if sm_coin:
-        result = analyze_mtf(sm_coin, buffer_pct, confirmation_candles, rr_sl, rr_tp, use_trailing, min_confirmations)
-        
-        if result:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Smart Money Score", f"{result['smart_money']['score']:.0f}/100")
-            col2.metric("Market Structure", 
-                       "🟢 Bullish" if result['smart_money']['reasons'] else "🟡 Neutral")
-            col3.metric("Order Blocks", len(result['smart_money']['reasons']))
-            col4.metric("Total Confirmations", f"{result.get('confirmations', 0)}/3")
-            
-            with st.expander("📋 Smart Money Details", expanded=True):
-                for reason in result['smart_money']['reasons']:
-                    st.write(f"• {reason}")
-            
-            fig = create_chart(result, sm_coin)
-            st.plotly_chart(fig, use_container_width=True)
+    st.subheader("📈 Chart Analysis")
+    chart_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="chart_select")
+    chart_tf = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=1)
+    if chart_coin:
+        df = get_data_safe(chart_coin, chart_tf, min_candles=50)
+        if df is not None:
+            result = analyze_macd_stoch(df, chart_tf)
+            if result:
+                col1, col2, col3, col4 = st.columns(4)
+                if "BUY" in result["action"]:
+                    signal_html = f'<div class="signal-buy">{result["action"]}</div>'
+                elif "SELL" in result["action"]:
+                    signal_html = f'<div class="signal-sell">{result["action"]}</div>'
+                elif "TAKE PROFIT" in result["action"]:
+                    signal_html = f'<div class="signal-take-profit">{result["action"]}</div>'
+                else:
+                    signal_html = f'<div class="signal-hold">{result["action"]}</div>'
+                col1.markdown(signal_html, unsafe_allow_html=True)
+                col2.metric("MACD DIF", f"{result['macd']['dif']:.4f}")
+                col3.metric("MACD DEA", f"{result['macd']['dea']:.4f}")
+                col4.metric("Histogram", f"{result['macd']['histogram']:.4f}")
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Stoch K", f"{result['stoch']['k']:.1f}")
+                col2.metric("Stoch D", f"{result['stoch']['d']:.1f}")
+                col3.metric("RSI", f"{result['rsi']:.1f}")
+                col4.metric("Volume Ratio", f"{result['volume_ratio']:.2f}x")
+                with st.expander("📋 Signal Details", expanded=True):
+                    if result["reasons"]:
+                        for reason in result["reasons"]:
+                            st.write(f"• {reason}")
+                    st.write(f"**Trend:** {'🟢 Bullish' if result['bullish_trend'] else '🔴 Bearish' if result['bearish_trend'] else '🟡 Sideways'}")
+                    st.write(f"**EMA20:** {result['ema20']:.4f}")
+                    st.write(f"**EMA50:** {result['ema50']:.4f}")
+                    st.write(f"**Buy Score:** {result['score']['buy']:.1f} | **Sell Score:** {result['score']['sell']:.1f}")
+                fig = create_chart(df, chart_coin, chart_tf)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.error(f"❌ Tidak bisa mendapatkan data untuk {chart_coin}")
 
-# ==================== TAB 3: TRADES ====================
+# ==================== TAB 3: HISTORY ====================
 with tab3:
-    st.subheader("📋 Trade Management")
-    
-    auto_trade = st.toggle("🤖 Auto Trading", value=True)
-    
-    if auto_trade:
-        st.info("🤖 Auto Trading AKTIF! Monitoring posisi...")
-        
-        monitor_positions()
-        
-        for symbol in st.session_state.watchlist[:5]:
-            ticker = yf.Ticker(f"{symbol}-USD")
-            df = ticker.history(period="7d", interval="15m")
-            if not df.empty:
-                trade = execute_trade(symbol, df, position_size=position_size, leverage=leverage)
-                if trade:
-                    st.success(f"🚀 {symbol}: {trade['signal']} at ${trade['entry_price']:.2f}")
-                    send_telegram(f"🚀 NEW TRADE: {symbol} - {trade['signal']} at ${trade['entry_price']:.2f}")
-    
-    st.subheader("📊 Open Positions")
-    trades = get_trades()
-    open_trades = [t for t in trades if t.get('status') == 'OPEN']
-    
-    if open_trades:
-        df_open = pd.DataFrame(open_trades)
-        cols = ['symbol', 'type', 'entry_price', 'stop_loss', 'take_profit', 'score', 'entry_time']
-        available = [c for c in cols if c in df_open.columns]
-        st.dataframe(df_open[available], use_container_width=True)
-    else:
-        st.info("No open positions")
-    
-    st.subheader("📊 Closed Trades")
-    closed_trades = [t for t in trades if t.get('status') == 'CLOSED']
-    
-    if closed_trades:
-        df_closed = pd.DataFrame(closed_trades)
-        cols = ['symbol', 'type', 'entry_price', 'exit_price', 'profit_pct', 'exit_time']
-        available = [c for c in cols if c in df_closed.columns]
-        st.dataframe(df_closed[available], use_container_width=True)
-        
-        stats = get_performance()
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Trades", stats.get('total_signals', 0))
-        col2.metric("Wins", stats.get('wins', 0))
-        col3.metric("Losses", stats.get('losses', 0))
-        col4.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-
-# ==================== TAB 4: HISTORY ====================
-with tab4:
     st.subheader("📜 Signal History")
-    
-    history = get_signal_history(limit=50)
+    history = get_signal_history(limit=100)
     if history:
         df_history = pd.DataFrame(history)
         if 'id' in df_history.columns:
             df_history = df_history.drop('id', axis=1)
         st.dataframe(df_history, use_container_width=True, hide_index=True)
-        
         csv = df_history.to_csv(index=False)
-        st.download_button(
-            label="📥 Download CSV",
-            data=csv,
-            file_name=f"history_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+        st.download_button(label="📥 Download CSV", data=csv,
+                           file_name=f"history_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
     else:
         st.info("Belum ada sinyal")
 
-# ==================== TAB 5: PERFORMANCE ====================
-with tab5:
+# ==================== TAB 4: PERFORMANCE ====================
+with tab4:
     st.subheader("📊 Performance Statistics")
-    
     stats = get_performance()
-    col1, col2, col3, col4, col5 = st.columns(5)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Signals", stats.get("total_signals", 0))
     col2.metric("Wins", stats.get("wins", 0))
     col3.metric("Losses", stats.get("losses", 0))
     col4.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-    col5.metric("Total Profit", f"${stats.get('total_profit', 0):.2f}")
-    
-    # Chart performance
-    trades = get_trades(limit=100)
-    closed_trades = [t for t in trades if t.get('status') == 'CLOSED']
-    if closed_trades:
-        df_perf = pd.DataFrame(closed_trades)
-        df_perf['exit_time'] = pd.to_datetime(df_perf['exit_time'])
-        df_perf = df_perf.sort_values('exit_time')
-        df_perf['cumulative_profit'] = df_perf['profit_pct'].cumsum()
-        
-        st.subheader("📈 Cumulative Profit")
-        st.line_chart(df_perf.set_index('exit_time')['cumulative_profit'])
+    st.divider()
+    st.subheader("📈 Trading Rules Summary")
+    rules = {
+        "BUY ⭐⭐⭐⭐⭐": "MACD histogram > 0, DIF > DEA, Stoch RSI 10-30, Golden Cross",
+        "BUY ⭐⭐⭐⭐": "MACD DIF > DEA, Stoch 20-40 & mengarah naik",
+        "HOLD ⭐⭐⭐⭐": "MACD masih naik, Stoch RSI 30-70",
+        "TAKE PROFIT ⭐⭐⭐⭐": "Stoch RSI >85, Histogram mulai mengecil",
+        "SELL ⭐⭐⭐⭐⭐": "Stoch RSI death cross di atas 80, MACD bearish crossover"
+    }
+    for rule, desc in rules.items():
+        st.write(f"**{rule}:** {desc}")
 
 # =========================================================
 # FOOTER
 # =========================================================
 st.divider()
 st.caption(f"""
-🔄 Data dari Yahoo Finance | Multi Timeframe: 1D, 4H, 1H, 15M, 5M  
-📊 Total Coins: {len(st.session_state.watchlist)} | ⚡ Leverage: {leverage}x  
-🎯 RR Strategy: {rr_sl}:{rr_tp} | 🛡️ Signal Hold: {hold_minutes}m  
-💾 Database: Supabase PostgreSQL | 📈 Signal: MACD (4H,1H,15M) + StochRSI (4H,1H,15M)
+🔄 Data dari Yahoo Finance | Timeframe: 15M, 1H, 4H  
+📊 Indikator: MACD + Stochastic RSI + EMA20 + EMA50 + Volume  
+💾 Database: Supabase PostgreSQL
 """)
