@@ -5,37 +5,7 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 import requests
 from datetime import datetime, timedelta
-
-# =========================================================
-# CACHE DATA YAHOO FINANCE
-# =========================================================
 import time
-
-_data_cache = {}
-_data_cache_time = {}
-
-def get_data_cached(symbol, interval, period, cache_ttl=30):
-    """
-    Data di-cache untuk mengurangi request Yahoo Finance.
-    TTL = 30 detik (bisa diatur).
-    """
-    key = f"{symbol}_{interval}_{period}"
-    current_time = time.time()
-    
-    # Cek cache
-    if key in _data_cache:
-        if current_time - _data_cache_time.get(key, 0) < cache_ttl:
-            return _data_cache[key]
-    
-    # Ambil data baru
-    df = get_data(symbol, interval, period)
-    if df is not None:
-        _data_cache[key] = df
-        _data_cache_time[key] = current_time
-    
-    return df
-
-
 import json
 import ta
 import numpy as np
@@ -44,7 +14,6 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import SGDClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
 import warnings
 import joblib
 import io
@@ -54,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- SUPABASE ---
-from supabase import create_client, Client
+from supabase import create_client
 
 warnings.filterwarnings('ignore')
 
@@ -68,7 +37,7 @@ st.set_page_config(
 )
 
 # =========================================================
-# CSS KUSTOM
+# CSS KUSTOM (disingkat)
 # =========================================================
 st.markdown("""
 <style>
@@ -79,10 +48,6 @@ st.markdown("""
         border-radius: 16px;
         padding: 16px;
         box-shadow: 0 4px 20px rgba(0,255,255,0.05);
-    }
-    [data-testid="stMetric"]:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 30px rgba(0,255,255,0.1);
     }
     .signal-buy {
         background: linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05));
@@ -139,24 +104,28 @@ st.markdown("""
         transform: scale(1.03);
         box-shadow: 0 0 30px rgba(0,255,255,0.3);
     }
-    .score-high { color: #00ff88; font-weight: 700; font-size: 24px; }
-    .score-mid { color: #ffaa00; font-weight: 700; font-size: 24px; }
-    .score-low { color: #ff3b5c; font-weight: 700; font-size: 24px; }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] {
-        background: rgba(255,255,255,0.03);
-        border-radius: 8px 8px 0 0;
-        padding: 8px 20px;
-        color: #94a3b8;
-        font-weight: 500;
-    }
-    .stTabs [aria-selected="true"] {
-        background: rgba(0,255,136,0.08);
-        color: #00ff88;
-        border-bottom: 2px solid #00ff88;
-    }
 </style>
 """, unsafe_allow_html=True)
+
+# =========================================================
+# CACHE DATA YAHOO FINANCE
+# =========================================================
+_data_cache = {}
+_data_cache_time = {}
+
+def get_data_cached(symbol, interval, period, cache_ttl=30):
+    key = f"{symbol}_{interval}_{period}"
+    current_time = time.time()
+    
+    if key in _data_cache:
+        if current_time - _data_cache_time.get(key, 0) < cache_ttl:
+            return _data_cache[key]
+    
+    df = get_data(symbol, interval, period)
+    if df is not None:
+        _data_cache[key] = df
+        _data_cache_time[key] = current_time
+    return df
 
 # =========================================================
 # SUPABASE CONNECTION
@@ -165,40 +134,26 @@ st.markdown("""
 def get_supabase():
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
-
     if not url:
         try:
             url = st.secrets["supabase"]["url"]
         except:
             pass
-
     if not key:
         try:
             key = st.secrets["supabase"]["key"]
         except:
             pass
-
     if not url or not key:
         raise Exception("SUPABASE_URL atau SUPABASE_KEY belum diisi.")
-
     return create_client(url, key)
-# =========================================================
-# Download Semua Timeframe Sekaligus
-# =========================================================
 
-@st.cache_data(ttl=30)
+# =========================================================
+# DOWNLOAD SEMUA TIMEFRAME SEKALIGUS
+# =========================================================
+@st.cache_data(ttl=30, show_spinner=False)
 def get_all_timeframes(symbol):
-    """
-    Download semua timeframe sekaligus untuk 1 symbol.
-    Hanya 1 request per symbol (bukan 5).
-    """
-    timeframes = {
-        '1d': '1d',
-        '4h': '4h', 
-        '1h': '1h',
-        '15m': '15m',
-        '5m': '5m'
-    }
+    timeframes = {'1d': '1d', '4h': '4h', '1h': '1h', '15m': '15m', '5m': '5m'}
     data = {}
     for tf, interval in timeframes.items():
         df = get_data_cached(symbol, interval, '30d', cache_ttl=30)
@@ -219,17 +174,13 @@ def safe_supabase_request(func, default=None):
         return default
 
 # =========================================================
-# DATABASE FUNCTIONS (SUPABASE)
+# DATABASE FUNCTIONS
 # =========================================================
-
-# --- WATCHLIST ---
 def get_watchlist():
     def _fetch():
         supabase = get_supabase()
         res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-        if res.data:
-            return [r["symbol"] for r in res.data]
-        return ["BTC"]
+        return [r["symbol"] for r in res.data] if res.data else ["BTC"]
     return safe_supabase_request(_fetch, ["BTC"])
 
 def add_coin(symbol):
@@ -248,7 +199,6 @@ def remove_coin(symbol):
     except:
         return False
 
-# --- SIGNAL HISTORY ---
 def save_signal(data):
     try:
         supabase = get_supabase()
@@ -266,7 +216,6 @@ def get_signal_history(limit=100):
         return res.data or []
     return safe_supabase_request(_fetch, [])
 
-# --- TRADES ---
 def save_trade(data):
     try:
         supabase = get_supabase()
@@ -296,7 +245,6 @@ def update_trade(trade_id, updates):
         st.warning(f"⚠️ Gagal update trade: {e}")
         return False
 
-# --- PERFORMANCE ---
 def update_performance(stats):
     try:
         supabase = get_supabase()
@@ -323,38 +271,8 @@ def get_performance():
         return default
     return safe_supabase_request(_fetch, {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0})
 
-# --- DAILY STATS ---
-def save_daily_stats(stats):
-    try:
-        supabase = get_supabase()
-        supabase.table("daily_stats").upsert(stats, on_conflict="date").execute()
-        return True
-    except:
-        return False
-
-# --- ML PREDICTIONS ---
-def save_prediction(data):
-    try:
-        supabase = get_supabase()
-        data["timestamp"] = datetime.now().isoformat()
-        supabase.table("ml_predictions").insert(data).execute()
-        return True
-    except Exception as e:
-        st.warning(f"⚠️ Gagal simpan prediction: {e}")
-        return False
-
-def get_predictions(symbol=None, limit=50):
-    def _fetch():
-        supabase = get_supabase()
-        query = supabase.table("ml_predictions").select("*")
-        if symbol:
-            query = query.eq("symbol", symbol)
-        res = query.order("timestamp", desc=True).limit(limit).execute()
-        return res.data or []
-    return safe_supabase_request(_fetch, [])
-
 # =========================================================
-# TELEGRAM FUNCTIONS
+# TELEGRAM
 # =========================================================
 def send_telegram(message):
     try:
@@ -365,19 +283,6 @@ def send_telegram(message):
             requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
     except:
         pass
-
-# =========================================================
-# USD TO IDR
-# =========================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_usd_idr():
-    try:
-        url = "https://open.er-api.com/v6/latest/USD"
-        response = requests.get(url, timeout=10)
-        data = response.json()
-        return data["rates"]["IDR"]
-    except:
-        return 16000
 
 # =========================================================
 # FORMAT PRICE
@@ -396,13 +301,8 @@ def format_price(value):
     else:
         return f"$ {value:,.8f}"
 
-def format_percentage(value):
-    if pd.isna(value) or value is None:
-        return "-"
-    return f"{value:.1f}%"
-
 # =========================================================
-# GET DATA (YAHOO FINANCE)
+# GET DATA
 # =========================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def get_data(symbol, interval, period):
@@ -434,7 +334,6 @@ def get_data_safe(symbol, interval, min_candles=20):
         "1d": ["30d", "60d", "90d", "1y"],
     }
     for period in periods.get(interval, ["7d", "14d", "30d"]):
-        # ✅ PAKAI CACHE
         df = get_data_cached(symbol, interval, period, cache_ttl=30)
         if df is not None and len(df) >= min_candles:
             return df
@@ -503,7 +402,7 @@ def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
     return k, d
 
 # =========================================================
-# SMART MONEY CONCEPTS
+# SMART MONEY CONCEPTS (SEDERHANA)
 # =========================================================
 def find_order_blocks(df, lookback=20):
     blocks = []
@@ -600,7 +499,7 @@ def calculate_smart_money_score(df, lookback=20):
     return {'score': score, 'reasons': reasons}
 
 # =========================================================
-# AI PREDICTOR (TANPA PENYIMPANAN MODEL)
+# AI PREDICTOR (DENGAN SUPABASE STORAGE + ONLINE LEARNING)
 # =========================================================
 class AIPredictor:
     def __init__(self):
@@ -611,6 +510,7 @@ class AIPredictor:
         self.is_trained = False
         self.features = []
         self.version = 1
+        self.trade_feedback = []
 
     def _extract_features(self, df):
         features = pd.DataFrame()
@@ -674,15 +574,8 @@ class AIPredictor:
         self._save_model()
         return True
 
-    # =========================================================
-    # ✅ SIMPAN MODEL KE SUPABASE STORAGE
-    # =========================================================
     def _save_model(self):
-        """Simpan model ke Supabase Storage"""
         try:
-            import joblib
-            import io
-            
             model_data = {
                 'rf': self.model_rf,
                 'gb': self.model_gb,
@@ -691,13 +584,9 @@ class AIPredictor:
                 'features': self.features,
                 'version': self.version
             }
-            
-            # Serialize ke bytes
             buf = io.BytesIO()
             joblib.dump(model_data, buf)
             buf.seek(0)
-            
-            # Upload ke Supabase Storage
             supabase = get_supabase()
             supabase.storage.from_('models').upload(
                 'ai_model.pkl',
@@ -706,8 +595,7 @@ class AIPredictor:
             )
             print("✅ Model saved to Supabase Storage")
         except Exception as e:
-            print(f"⚠️ Gagal simpan model ke Storage: {e}")
-            # Fallback: simpan ke database
+            print(f"⚠️ Gagal simpan model: {e}")
             try:
                 model_data = {
                     'rf': self.model_rf,
@@ -729,16 +617,8 @@ class AIPredictor:
             except Exception as e2:
                 print(f"❌ Gagal simpan model: {e2}")
 
-    # =========================================================
-    # ✅ LOAD MODEL DARI SUPABASE STORAGE
-    # =========================================================
     def _load_model(self):
-        """Load model dari Supabase Storage atau database"""
         try:
-            import joblib
-            import io
-            
-            # Coba dari Storage dulu
             supabase = get_supabase()
             res = supabase.storage.from_('models').download('ai_model.pkl')
             if res:
@@ -753,10 +633,9 @@ class AIPredictor:
                 self.is_trained = True
                 print("✅ Model loaded from Supabase Storage")
                 return True
-        except Exception as e:
-            print(f"ℹ️ Model not found in Storage: {e}")
+        except:
+            pass
         
-        # Fallback: coba dari database
         try:
             supabase = get_supabase()
             res = supabase.table("performance").select("value").eq("key", "ml_model").execute()
@@ -773,8 +652,8 @@ class AIPredictor:
                 self.is_trained = True
                 print("✅ Model loaded from database")
                 return True
-        except Exception as e:
-            print(f"ℹ️ Model not found in database: {e}")
+        except:
+            pass
         
         print("❌ No model found, will train new one")
         return False
@@ -817,26 +696,79 @@ class AIPredictor:
             'hold_prob': float(avg_probs[0] * 100) if len(avg_probs) > 0 else 0,
             'ensemble_votes': votes
         }
-     
 
-     
+    def update_with_feedback(self, symbol, actual_signal, profit_pct):
+        if not self.is_trained or self.model_sgd is None:
+            return False
         
+        try:
+            if profit_pct > 1.0:
+                label = actual_signal
+            elif profit_pct < -1.0:
+                if actual_signal == 1:
+                    label = 2
+                elif actual_signal == 2:
+                    label = 1
+                else:
+                    label = 0
+            else:
+                label = 0
+            
+            df = get_data_cached(symbol, '15m', '7d', cache_ttl=30)
+            if df is None or len(df) < 50:
+                return False
+            
+            features = self._extract_features(df)
+            if features.empty:
+                return False
+            
+            X = features.iloc[-1:].values
+            X_scaled = self.scaler.transform(X)
+            
+            if hasattr(self.model_sgd, 'partial_fit'):
+                if not hasattr(self.model_sgd, 'classes_'):
+                    self.model_sgd.partial_fit(X_scaled, [label], classes=[0, 1, 2])
+                else:
+                    self.model_sgd.partial_fit(X_scaled, [label])
+            
+            self.trade_feedback.append((X_scaled[0], label))
+            
+            if len(self.trade_feedback) >= 50:
+                self._retrain_with_feedback()
+                self.trade_feedback = []
+            
+            return True
+        except Exception as e:
+            print(f"⚠️ Gagal update feedback: {e}")
+            return False
 
-    
+    def _retrain_with_feedback(self):
+        if len(self.trade_feedback) < 20:
+            return
+        
+        X_fb = np.array([x for x, _ in self.trade_feedback])
+        y_fb = np.array([y for _, y in self.trade_feedback])
+        
+        try:
+            if self.model_rf is not None:
+                self.model_rf.fit(X_fb, y_fb)
+            if self.model_gb is not None:
+                self.model_gb.fit(X_fb, y_fb)
+            print(f"✅ AI retrained with {len(self.trade_feedback)} feedback samples")
+        except Exception as e:
+            print(f"⚠️ Gagal retrain: {e}")
 
 # =========================================================
-# INITIALIZE AI PREDICTOR (TRAIN SEKALI SAAT STARTUP)
+# INITIALIZE AI PREDICTOR
 # =========================================================
 @st.cache_resource
 def get_ai_predictor():
     predictor = AIPredictor()
     
-    # ✅ Coba load model yang sudah ada
     if predictor._load_model():
         st.success("✅ AI Model loaded from Supabase Storage!")
         return predictor
     
-    # ❌ Jika tidak ada, train baru
     with st.spinner("🤖 Training AI model (first time)..."):
         df = get_data_safe("BTC", "15m", min_candles=200)
         if df is not None and len(df) > 150:
@@ -851,7 +783,7 @@ def get_ai_predictor():
     return predictor
 
 # =========================================================
-# FUNGSI UNTUK AI SAFE
+# FUNGSI AI SAFE
 # =========================================================
 _predictor = None
 
@@ -914,11 +846,9 @@ def analyze_trend(df, timeframe_name):
         return "🟡 SIDEWAYS"
 
 # =========================================================
-# ANALISIS MULTI TIMEFRAME (MACD + StochRSI)
+# ANALISIS MULTI TIMEFRAME
 # =========================================================
 def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
-    # Ambil data semua timeframe
-    # ✅ Download semua data sekaligus (1 request per symbol)
     data = get_all_timeframes(symbol)
     df_1d = data.get('1d')
     df_4h = data.get('4h')
@@ -926,7 +856,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     df_15m = data.get('15m')
     df_5m = data.get('5m')
     
-    # Fallback jika ada yang None
     if df_1h is None:
         return None
     if df_15m is None:
@@ -938,28 +867,21 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     if df_1d is None:
         df_1d = df_4h.copy()
 
-    
-
-    # --- TREND dari EMA (tetap untuk info) ---
     trend_1h = analyze_trend(df_1h, "1H")
     trend_15m = analyze_trend(df_15m, "15M")
     trend_5m = analyze_trend(df_5m, "5M")
     trend_4h = analyze_trend(df_4h, "4H")
     trend_1d = analyze_trend(df_1d, "1D")
 
-    # --- HITUNG MACD & STOCHRSI untuk SEMUA TIMEFRAME ---
     def get_macd_stoch_data(df):
         if df is None or len(df) < 20:
             return None
         try:
             macd, signal, hist = MACD(df)
             k, d = StochasticRSI(df)
-            
             if macd.empty or k.empty:
                 return None
-            
             last_idx = -1
-            
             return {
                 'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
                 'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
@@ -970,7 +892,7 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
                 'signal_prev': float(signal.iloc[-2]) if len(signal) > 1 and not pd.isna(signal.iloc[-2]) else 0,
                 'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
             }
-        except Exception as e:
+        except:
             return None
     
     data_4h = get_macd_stoch_data(df_4h)
@@ -978,76 +900,48 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     data_15m = get_macd_stoch_data(df_15m)
     data_5m = get_macd_stoch_data(df_5m)
     
-    # --- BANGUN SIGNAL BERDASARKAN MACD + STOCHRSI ---
-    
     def check_buy_signal(d4, d1, d15):
-        """Cek apakah semua kondisi BUY terpenuhi"""
         if not d4 or not d1 or not d15:
             return False
-        
         try:
-            # 1. MACD 4H > 0 (trend bullish)
             if d4.get('macd', 0) <= 0:
                 return False
-            
-            # 2. MACD 1H > Signal (bullish cross)
             if d1.get('macd', 0) <= d1.get('signal', 0):
                 return False
-            
-            # 3. MACD 15M > Signal (bullish cross)
             if d15.get('macd', 0) <= d15.get('signal', 0):
                 return False
-            
-            # 4. StochRSI tidak overbought (K < 80)
             if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
                 return False
-            
-            # 5. StochRSI 15M > 20 atau baru naik dari bawah 20
             if d15.get('stoch_k', 50) < 20:
                 if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
                     return False
-            
             return True
         except:
             return False
     
     def check_sell_signal(d4, d1, d15):
-        """Cek apakah semua kondisi SELL terpenuhi"""
         if not d4 or not d1 or not d15:
             return False
-        
         try:
-            # 1. MACD 4H < 0 (trend bearish)
             if d4.get('macd', 0) >= 0:
                 return False
-            
-            # 2. MACD 1H < Signal (bearish cross)
             if d1.get('macd', 0) >= d1.get('signal', 0):
                 return False
-            
-            # 3. MACD 15M < Signal (bearish cross)
             if d15.get('macd', 0) >= d15.get('signal', 0):
                 return False
-            
-            # 4. StochRSI tidak oversold (K > 20)
             if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
                 return False
-            
-            # 5. StochRSI 15M < 80 atau baru turun dari atas 80
             if d15.get('stoch_k', 50) > 80:
                 if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
                     return False
-            
             return True
         except:
             return False
     
-    # --- Tentukan ENTRY SIGNAL ---
     entry_signal = None
     is_buy = check_buy_signal(data_4h, data_1h, data_15m)
     is_sell = check_sell_signal(data_4h, data_1h, data_15m)
     
-    # Hitung kekuatan sinyal (berapa banyak konfirmasi)
     buy_confirmations = 0
     sell_confirmations = 0
     
@@ -1061,7 +955,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
         if data_15m.get('macd', 0) > data_15m.get('signal', 0): buy_confirmations += 1
         if data_15m.get('macd', 0) < data_15m.get('signal', 0): sell_confirmations += 1
     
-    # Tentukan sinyal berdasarkan konfirmasi
     if is_buy and buy_confirmations >= 2:
         if buy_confirmations == 3:
             entry_signal = "🟢 STRONG BUY (MACD + Stoch Confirmed)"
@@ -1075,7 +968,6 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
     else:
         entry_signal = "⏳ WAIT"
     
-    # --- HITUNG ENTRY PRICE, SL, TP ---
     if "BUY" in entry_signal or "SELL" in entry_signal:
         entry_price = df_5m["Close"].iloc[-1]
         atr_value = ATR(df_5m, period=20).iloc[-1] if len(ATR(df_5m, period=20)) > 0 else 0.01
@@ -1091,17 +983,14 @@ def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp
         entry_price = stop_loss = take_profit = None
         atr_value = 0.01
     
-    # --- SKOR AI & SMART MONEY (tetap) ---
     sm_data = calculate_smart_money_score(df_5m)
     ai_data = safe_ai_score(df_5m)
     
-    # Hitung total_score (40% AI + 40% Smart Money + 20% MACD/Stoch)
     macd_score = 50 + (buy_confirmations - sell_confirmations) * 15
     macd_score = max(0, min(100, macd_score))
     total_score = (sm_data['score'] * 0.4 + ai_data['score'] * 0.4 + macd_score * 0.2)
     total_score = max(0, min(100, total_score))
     
-    # --- RETURN DENGAN PENANGANAN NONE ---
     return {
         "symbol": symbol,
         "trend_1h": trend_1h,
@@ -1152,7 +1041,6 @@ def create_chart(result, symbol):
     df = result["df_5m"]
     df_15m = result["df_15m"].copy()
     
-    # Hitung indikator untuk chart
     df_15m["RSI"] = RSI(df_15m, 14)
     macd, signal, hist = MACD(df_15m)
     df_15m["MACD"] = macd
@@ -1166,7 +1054,6 @@ def create_chart(result, symbol):
     df_15m["STOCH_K"] = k
     df_15m["STOCH_D"] = d
     
-    # Candlestick
     fig.add_trace(
         go.Candlestick(
             x=df["Time"],
@@ -1206,7 +1093,6 @@ def create_chart(result, symbol):
         if result["take_profit"]:
             fig.add_hline(y=result["take_profit"], line_dash="dash", line_color="#00ff00", row=1, col=1)
     
-    # RSI
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["RSI"], line=dict(color="#a855f7", width=2), name="RSI (15M)"),
         row=2, col=1
@@ -1214,7 +1100,6 @@ def create_chart(result, symbol):
     fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
     fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
     
-    # MACD
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["MACD"], line=dict(color="#00a2ff", width=1.5), name="MACD"),
         row=3, col=1
@@ -1229,7 +1114,6 @@ def create_chart(result, symbol):
         row=3, col=1
     )
     
-    # Stochastic
     fig.add_trace(
         go.Scatter(x=df_15m["Time"], y=df_15m["STOCH_K"], line=dict(color="#ffaa00", width=1.5), name="Stoch K"),
         row=4, col=1
@@ -1241,7 +1125,6 @@ def create_chart(result, symbol):
     fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
     fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
     
-    # Volume
     colors_vol = ["#00ff88" if c >= o else "#ff3b5c" for c, o in zip(df["Close"], df["Open"])]
     fig.add_trace(
         go.Bar(x=df["Time"], y=df["Volume"], marker_color=colors_vol, opacity=0.5, name="Volume"),
@@ -1320,7 +1203,7 @@ def execute_trade(symbol, df, balance=10000, position_size=100, leverage=10):
     return trade
 
 # =========================================================
-# MONITOR POSITIONS
+# MONITOR POSITIONS (DENGAN FEEDBACK AI)
 # =========================================================
 def monitor_positions():
     trades = get_trades()
@@ -1367,17 +1250,37 @@ def monitor_positions():
             
             update_trade(trade['id'], updates)
             
+            # ✅ AI BELAJAR DARI TRADE
+            predictor = get_predictor()
+            if predictor.is_trained and trade.get('feedback_used', 0) == 0:
+                original_signal = 1 if trade['type'] == 'BUY' else 2
+                predictor.update_with_feedback(symbol, original_signal, profit_pct)
+                update_trade(trade['id'], {'feedback_used': 1})
+            
             msg = f"{'✅' if profit_pct > 0 else '❌'} {symbol} Closed: {profit_pct:.2f}%"
             send_telegram(msg)
 
 # =========================================================
-# BACKTEST
+# BACKTEST (TANPA LOOK-AHEAD BIAS)
 # =========================================================
 def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5):
+    # Ambil data historis
     ticker = yf.Ticker(f"{symbol}-USD")
     df = ticker.history(period=period, interval=interval)
     if df.empty:
         return None
+    
+    # Siapkan data untuk semua timeframe
+    df_4h = df.resample('4h').agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna()
+    
+    df_1h = df.resample('1h').agg({
+        'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'
+    }).dropna()
+    
+    df_15m = df.copy()
+    df_5m = df
     
     balance = 10000
     trades = []
@@ -1386,18 +1289,27 @@ def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5)
     trade_type = None
     sl = 0
     tp = 0
-    atr = ATR(df, 14)
+    atr = ATR(df_15m, 14)
     
-    for i in range(50, len(df)-1):
-        window = df.iloc[:i+1].copy()
-        if len(window) < 50:
+    for i in range(50, len(df_15m)-1):
+        # Ambil window data sampai index i (tanpa look-ahead)
+        window_5m = df_5m.iloc[:i+1].copy()
+        window_15m = df_15m.iloc[:i+1].copy()
+        
+        # Sinkronkan timeframe lain
+        current_time = df_15m.index[i]
+        window_1h = df_1h[df_1h.index <= current_time].tail(50)
+        window_4h = df_4h[df_4h.index <= current_time].tail(50)
+        
+        if len(window_1h) < 20 or len(window_4h) < 20:
             continue
         
-        result = analyze_mtf(symbol)
+        # Analisis berdasarkan window (tanpa download baru)
+        result = analyze_mtf_window(window_5m, window_15m, window_1h, window_4h, symbol)
         if not result:
             continue
         
-        current_price = df['Close'].iloc[i]
+        current_price = df_15m['Close'].iloc[i]
         
         if not in_position:
             if result["entry_signal"] and "WAIT" not in result["entry_signal"]:
@@ -1414,7 +1326,7 @@ def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5)
                     tp = entry_price - atr_value * sl_atr * rr_ratio
                 
                 trades.append({
-                    'entry_time': df.index[i],
+                    'entry_time': df_15m.index[i],
                     'entry_price': entry_price,
                     'type': trade_type,
                     'sl': sl,
@@ -1427,26 +1339,26 @@ def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5)
                     profit_pct = (exit_price / entry_price - 1) * 100
                     balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                    trades[-1].update({'exit_time': df_15m.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
                 elif current_price >= tp:
                     exit_price = tp
                     profit_pct = (exit_price / entry_price - 1) * 100
                     balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                    trades[-1].update({'exit_time': df_15m.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
             else:
                 if current_price >= sl:
                     exit_price = sl
                     profit_pct = (entry_price / exit_price - 1) * 100
                     balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                    trades[-1].update({'exit_time': df_15m.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
                 elif current_price <= tp:
                     exit_price = tp
                     profit_pct = (entry_price / exit_price - 1) * 100
                     balance *= (1 + profit_pct/100)
                     in_position = False
-                    trades[-1].update({'exit_time': df.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
+                    trades[-1].update({'exit_time': df_15m.index[i], 'exit_price': exit_price, 'profit_pct': profit_pct})
     
     wins = len([t for t in trades if t.get('profit_pct', 0) > 0])
     total_profit = sum([t.get('profit_pct', 0) for t in trades])
@@ -1463,7 +1375,122 @@ def run_backtest(symbol, period="1mo", interval="15m", rr_ratio=3.0, sl_atr=1.5)
     }
 
 # =========================================================
-# EVALUASI AI PERFORMANCE
+# ANALISIS MTF UNTUK BACKTEST (TANPA DOWNLOAD)
+# =========================================================
+def analyze_mtf_window(df_5m, df_15m, df_1h, df_4h, symbol):
+    """Versi analyze_mtf yang pakai data window (tanpa download)"""
+    if df_1h is None or len(df_1h) < 20:
+        return None
+    
+    # Trend
+    trend_1h = analyze_trend(df_1h, "1H")
+    trend_15m = analyze_trend(df_15m, "15M")
+    trend_5m = analyze_trend(df_5m, "5M")
+    trend_4h = analyze_trend(df_4h, "4H")
+    
+    # MACD & Stoch
+    def get_macd_stoch_data(df):
+        if df is None or len(df) < 20:
+            return None
+        try:
+            macd, signal, hist = MACD(df)
+            k, d = StochasticRSI(df)
+            if macd.empty or k.empty:
+                return None
+            last_idx = -1
+            return {
+                'macd': float(macd.iloc[last_idx]) if not pd.isna(macd.iloc[last_idx]) else 0,
+                'signal': float(signal.iloc[last_idx]) if not pd.isna(signal.iloc[last_idx]) else 0,
+                'stoch_k': float(k.iloc[last_idx]) if not pd.isna(k.iloc[last_idx]) else 50,
+                'macd_prev': float(macd.iloc[-2]) if len(macd) > 1 and not pd.isna(macd.iloc[-2]) else 0,
+                'stoch_k_prev': float(k.iloc[-2]) if len(k) > 1 and not pd.isna(k.iloc[-2]) else 50,
+            }
+        except:
+            return None
+    
+    data_4h = get_macd_stoch_data(df_4h)
+    data_1h = get_macd_stoch_data(df_1h)
+    data_15m = get_macd_stoch_data(df_15m)
+    
+    # Sama seperti analyze_mtf biasa
+    def check_buy(d4, d1, d15):
+        if not d4 or not d1 or not d15:
+            return False
+        try:
+            if d4.get('macd', 0) <= 0: return False
+            if d1.get('macd', 0) <= d1.get('signal', 0): return False
+            if d15.get('macd', 0) <= d15.get('signal', 0): return False
+            if d4.get('stoch_k', 50) >= 80 or d1.get('stoch_k', 50) >= 80 or d15.get('stoch_k', 50) >= 80:
+                return False
+            if d15.get('stoch_k', 50) < 20:
+                if d15.get('stoch_k', 50) <= d15.get('stoch_k_prev', 50):
+                    return False
+            return True
+        except:
+            return False
+    
+    def check_sell(d4, d1, d15):
+        if not d4 or not d1 or not d15:
+            return False
+        try:
+            if d4.get('macd', 0) >= 0: return False
+            if d1.get('macd', 0) >= d1.get('signal', 0): return False
+            if d15.get('macd', 0) >= d15.get('signal', 0): return False
+            if d4.get('stoch_k', 50) <= 20 or d1.get('stoch_k', 50) <= 20 or d15.get('stoch_k', 50) <= 20:
+                return False
+            if d15.get('stoch_k', 50) > 80:
+                if d15.get('stoch_k', 50) >= d15.get('stoch_k_prev', 50):
+                    return False
+            return True
+        except:
+            return False
+    
+    is_buy = check_buy(data_4h, data_1h, data_15m)
+    is_sell = check_sell(data_4h, data_1h, data_15m)
+    
+    buy_conf = 0
+    sell_conf = 0
+    if data_4h:
+        if data_4h.get('macd', 0) > 0: buy_conf += 1
+        if data_4h.get('macd', 0) < 0: sell_conf += 1
+    if data_1h:
+        if data_1h.get('macd', 0) > data_1h.get('signal', 0): buy_conf += 1
+        if data_1h.get('macd', 0) < data_1h.get('signal', 0): sell_conf += 1
+    if data_15m:
+        if data_15m.get('macd', 0) > data_15m.get('signal', 0): buy_conf += 1
+        if data_15m.get('macd', 0) < data_15m.get('signal', 0): sell_conf += 1
+    
+    if is_buy and buy_conf >= 2:
+        entry_signal = "🟢 STRONG BUY" if buy_conf == 3 else "🟢 BUY"
+    elif is_sell and sell_conf >= 2:
+        entry_signal = "🔴 STRONG SELL" if sell_conf == 3 else "🔴 SELL"
+    else:
+        entry_signal = "⏳ WAIT"
+    
+    # Price
+    price = df_15m["Close"].iloc[-1] if not df_15m.empty else 0
+    
+    # Smart Money & AI Score (sederhana)
+    sm_data = calculate_smart_money_score(df_5m)
+    ai_data = safe_ai_score(df_15m)
+    
+    total_score = (sm_data['score'] * 0.4 + ai_data['score'] * 0.4 + 50 * 0.2)
+    total_score = max(0, min(100, total_score))
+    
+    return {
+        "symbol": symbol,
+        "entry_signal": entry_signal,
+        "entry_price": price,
+        "stop_loss": None,
+        "take_profit": None,
+        "smart_money": sm_data,
+        "ai": ai_data,
+        "total_score": total_score,
+        "confirmations": max(buy_conf, sell_conf)
+    }
+
+# =========================================================
+# EVALUASI AI
 # =========================================================
 def evaluate_ai_performance():
     trades = get_trades(limit=200)
