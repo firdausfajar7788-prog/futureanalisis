@@ -182,6 +182,31 @@ def get_supabase():
         raise Exception("SUPABASE_URL atau SUPABASE_KEY belum diisi.")
 
     return create_client(url, key)
+# =========================================================
+# Download Semua Timeframe Sekaligus
+# =========================================================
+
+@st.cache_data(ttl=30)
+def get_all_timeframes(symbol):
+    """
+    Download semua timeframe sekaligus untuk 1 symbol.
+    Hanya 1 request per symbol (bukan 5).
+    """
+    timeframes = {
+        '1d': '1d',
+        '4h': '4h', 
+        '1h': '1h',
+        '15m': '15m',
+        '5m': '5m'
+    }
+    data = {}
+    for tf, interval in timeframes.items():
+        df = get_data_cached(symbol, interval, '30d', cache_ttl=30)
+        if df is not None and len(df) >= 20:
+            data[tf] = df
+        else:
+            data[tf] = None
+    return data
 
 # =========================================================
 # SAFE SUPABASE REQUEST
@@ -409,7 +434,8 @@ def get_data_safe(symbol, interval, min_candles=20):
         "1d": ["30d", "60d", "90d", "1y"],
     }
     for period in periods.get(interval, ["7d", "14d", "30d"]):
-        df = get_data(symbol, interval, period)
+        # ✅ PAKAI CACHE
+        df = get_data_cached(symbol, interval, period, cache_ttl=30)
         if df is not None and len(df) >= min_candles:
             return df
     return None
@@ -892,21 +918,27 @@ def analyze_trend(df, timeframe_name):
 # =========================================================
 def analyze_mtf(symbol, buffer_pct=0.5, confirmation_candles=3, rr_sl=3.0, rr_tp=7.0, use_trailing=True, min_confirmations=2):
     # Ambil data semua timeframe
-    df_1h = get_data_safe(symbol, "1h", min_candles=30)
+    # ✅ Download semua data sekaligus (1 request per symbol)
+    data = get_all_timeframes(symbol)
+    df_1d = data.get('1d')
+    df_4h = data.get('4h')
+    df_1h = data.get('1h')
+    df_15m = data.get('15m')
+    df_5m = data.get('5m')
+    
+    # Fallback jika ada yang None
     if df_1h is None:
         return None
-    df_15m = get_data_safe(symbol, "15m", min_candles=50)
     if df_15m is None:
         df_15m = df_1h.copy()
-    df_5m = get_data_safe(symbol, "5m", min_candles=20)
     if df_5m is None:
         df_5m = df_15m.copy()
-    df_4h = get_data_safe(symbol, "4h", min_candles=20)
     if df_4h is None:
         df_4h = df_1h.copy()
-    df_1d = get_data_safe(symbol, "1d", min_candles=10)
     if df_1d is None:
         df_1d = df_4h.copy()
+
+    
 
     # --- TREND dari EMA (tetap untuk info) ---
     trend_1h = analyze_trend(df_1h, "1H")
