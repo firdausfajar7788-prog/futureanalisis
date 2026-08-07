@@ -773,15 +773,22 @@ class AIPredictor:
 # =========================================================
 @st.cache_resource
 def get_ai_predictor():
-    """Train AI model sekali dan cache untuk seluruh sesi."""
     predictor = AIPredictor()
     
-    # Ambil data BTC untuk training
-    with st.spinner("🤖 Training AI model..."):
+    # ✅ Coba load model yang sudah ada
+    if predictor._load_model():
+        st.success("✅ AI Model loaded from Supabase Storage!")
+        return predictor
+    
+    # ❌ Jika tidak ada, train baru
+    with st.spinner("🤖 Training AI model (first time)..."):
         df = get_data_safe("BTC", "15m", min_candles=200)
         if df is not None and len(df) > 150:
             predictor.train(df)
-            st.success("✅ AI Model trained with BTC data!")
+            if predictor.is_trained:
+                st.success("✅ AI Model trained and saved to Supabase Storage!")
+            else:
+                st.warning("⚠️ Gagal train AI model, menggunakan default.")
         else:
             st.warning("⚠️ Gagal train AI model, menggunakan default.")
     
