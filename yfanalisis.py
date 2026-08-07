@@ -554,6 +554,7 @@ class AIPredictor:
         self.scaler = StandardScaler()
         self.is_trained = False
         self.features = []
+        self.version = 1
 
     def _extract_features(self, df):
         features = pd.DataFrame()
@@ -613,12 +614,122 @@ class AIPredictor:
         self.model_gb.fit(X_scaled, y)
         self.model_sgd.fit(X_scaled, y)
         self.is_trained = True
+        self.version += 1
+        self._save_model()
         return True
+
+    # =========================================================
+    # ✅ SIMPAN MODEL KE SUPABASE STORAGE
+    # =========================================================
+    def _save_model(self):
+        """Simpan model ke Supabase Storage"""
+        try:
+            import joblib
+            import io
+            
+            model_data = {
+                'rf': self.model_rf,
+                'gb': self.model_gb,
+                'sgd': self.model_sgd,
+                'scaler': self.scaler,
+                'features': self.features,
+                'version': self.version
+            }
+            
+            # Serialize ke bytes
+            buf = io.BytesIO()
+            joblib.dump(model_data, buf)
+            buf.seek(0)
+            
+            # Upload ke Supabase Storage
+            supabase = get_supabase()
+            supabase.storage.from_('models').upload(
+                'ai_model.pkl',
+                buf.read(),
+                {'content-type': 'application/octet-stream'}
+            )
+            print("✅ Model saved to Supabase Storage")
+        except Exception as e:
+            print(f"⚠️ Gagal simpan model ke Storage: {e}")
+            # Fallback: simpan ke database
+            try:
+                model_data = {
+                    'rf': self.model_rf,
+                    'gb': self.model_gb,
+                    'sgd': self.model_sgd,
+                    'scaler': self.scaler,
+                    'features': self.features,
+                    'version': self.version
+                }
+                buf = io.BytesIO()
+                joblib.dump(model_data, buf)
+                buf.seek(0)
+                supabase = get_supabase()
+                supabase.table("performance").upsert({
+                    "key": "ml_model",
+                    "value": {"binary": list(buf.read())}
+                }).execute()
+                print("✅ Model saved to database (fallback)")
+            except Exception as e2:
+                print(f"❌ Gagal simpan model: {e2}")
+
+    # =========================================================
+    # ✅ LOAD MODEL DARI SUPABASE STORAGE
+    # =========================================================
+    def _load_model(self):
+        """Load model dari Supabase Storage atau database"""
+        try:
+            import joblib
+            import io
+            
+            # Coba dari Storage dulu
+            supabase = get_supabase()
+            res = supabase.storage.from_('models').download('ai_model.pkl')
+            if res:
+                buf = io.BytesIO(res)
+                model_data = joblib.load(buf)
+                self.model_rf = model_data['rf']
+                self.model_gb = model_data['gb']
+                self.model_sgd = model_data['sgd']
+                self.scaler = model_data['scaler']
+                self.features = model_data['features']
+                self.version = model_data.get('version', 1)
+                self.is_trained = True
+                print("✅ Model loaded from Supabase Storage")
+                return True
+        except Exception as e:
+            print(f"ℹ️ Model not found in Storage: {e}")
+        
+        # Fallback: coba dari database
+        try:
+            supabase = get_supabase()
+            res = supabase.table("performance").select("value").eq("key", "ml_model").execute()
+            if res.data and "value" in res.data[0]:
+                binary_data = bytes(res.data[0]["value"]["binary"])
+                buf = io.BytesIO(binary_data)
+                model_data = joblib.load(buf)
+                self.model_rf = model_data['rf']
+                self.model_gb = model_data['gb']
+                self.model_sgd = model_data['sgd']
+                self.scaler = model_data['scaler']
+                self.features = model_data['features']
+                self.version = model_data.get('version', 1)
+                self.is_trained = True
+                print("✅ Model loaded from database")
+                return True
+        except Exception as e:
+            print(f"ℹ️ Model not found in database: {e}")
+        
+        print("❌ No model found, will train new one")
+        return False
 
     def predict(self, df):
         default = {'signal': 0, 'confidence': 0, 'buy_prob': 0, 'sell_prob': 0, 'hold_prob': 100}
         if not self.is_trained or len(df) < 50:
             return default
+        if self.model_rf is None:
+            if not self._load_model():
+                return default
         features = self._extract_features(df)
         if features.empty:
             return default
@@ -650,6 +761,12 @@ class AIPredictor:
             'hold_prob': float(avg_probs[0] * 100) if len(avg_probs) > 0 else 0,
             'ensemble_votes': votes
         }
+     
+
+     
+        
+
+    
 
 # =========================================================
 # INITIALIZE AI PREDICTOR (TRAIN SEKALI SAAT STARTUP)
