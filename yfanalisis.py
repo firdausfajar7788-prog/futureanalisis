@@ -794,6 +794,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
 ])
 
 # ==================== TAB 1: SCANNER ====================
+# ==================== TAB 1: SCANNER ====================
 with tab1:
     st.subheader("📊 Signal Scanner - MACD + Stochastic RSI")
     all_signals = []
@@ -814,6 +815,7 @@ with tab1:
         progress_bar.progress((idx + 1) / len(st.session_state.watchlist[:50]))
         status_text.text(f"🔄 Scanning {symbol}...")
         result = analyze_mtf_macd_stoch(symbol, ["15m", "1h", "4h"])
+        
         if result:
             signal_data = {
                 "Coin": symbol,
@@ -831,57 +833,60 @@ with tab1:
                     signal_data[f"{tf.upper()} RSI"] = f"{res['rsi']:.1f}"
             all_signals.append(signal_data)
 
-    # Simpan pending signal jika sinyal kuat (BUY/SELL)
-if result["main_strength"] >= 2 and ("BUY" in result["main_signal"] or "SELL" in result["main_signal"]):
-    df_5m = get_data_safe(symbol, "5m", min_candles=20)
-    if df_5m is not None:
-        price = df_5m["Close"].iloc[-1]
-        atr = AverageTrueRange(df_5m["High"], df_5m["Low"], df_5m["Close"], window=14).average_true_range().iloc[-1]
-        if pd.isna(atr) or atr == 0:
-            atr = price * 0.01
-        
-        if "BUY" in result["main_signal"]:
-            entry = price
-            sl = entry - atr * 3
-            tp = entry + atr * 7
-        else:
-            entry = price
-            sl = entry + atr * 3
-            tp = entry - atr * 7
-        
-        if symbol not in st.session_state.pending_signal:
-            st.session_state.pending_signal[symbol] = {
-                "signal": result["main_signal"],
-                "time": datetime.now(),
-                "entry": entry,
-                "sl": sl,
-                "tp": tp,
-                "timeframe": "5m"
-            }
-            
-            sent = send_telegram_once(symbol, result["main_signal"], result)
-            
-            if sent:
-                # === PERBAIKI: Ambil data dari result dengan benar ===
-                signal_data = {
-                    'symbol': symbol,
-                    'signal': result["main_signal"],
-                    'entry_price': entry,
-                    'stop_loss': sl,
-                    'take_profit': tp,
-                    'trend_1h': result.get("trend_1h", "⏳ WAIT"),      # <--- SUDAH ADA DI result
-                    'trend_15m': result.get("trend_15m", "⏳ WAIT"),    # <--- SUDAH ADA DI result
-                    'score': result.get("total_score", 50),
-                    'confidence': (result.get("confirmations", 0) / 3) * 100 if result.get("confirmations", 0) > 0 else 0,
-                    'smart_money_score': result.get("smart_money", {}).get("score", 50),
-                    'timestamp': datetime.now().isoformat()
-                }
-                
-                if save_signal(signal_data):
-                    stats = get_performance()
-                    stats['total_signals'] = stats.get('total_signals', 0) + 1
-                    update_performance(stats)
-               
+            # ========== INI DIPINDAH KE DALAM LOOP (sejajar dengan if result) ==========
+            # Simpan pending signal jika sinyal kuat (BUY/SELL)
+            if result["main_strength"] >= 2 and ("BUY" in result["main_signal"] or "SELL" in result["main_signal"]):
+                # Hitung entry, TP, SL sederhana (gunakan harga terakhir 5M)
+                df_5m = get_data_safe(symbol, "5m", min_candles=20)
+                if df_5m is not None:
+                    price = df_5m["Close"].iloc[-1]
+                    # Menggunakan ATR untuk SL/TP
+                    atr = AverageTrueRange(df_5m["High"], df_5m["Low"], df_5m["Close"], window=14).average_true_range().iloc[-1]
+                    if pd.isna(atr) or atr == 0:
+                        atr = price * 0.01
+                    
+                    if "BUY" in result["main_signal"]:
+                        entry = price
+                        sl = entry - atr * 3
+                        tp = entry + atr * 7
+                    else:
+                        entry = price
+                        sl = entry + atr * 3
+                        tp = entry - atr * 7
+                    
+                    # Simpan ke pending jika belum ada
+                    if symbol not in st.session_state.pending_signal:
+                        st.session_state.pending_signal[symbol] = {
+                            "signal": result["main_signal"],
+                            "time": datetime.now(),
+                            "entry": entry,
+                            "sl": sl,
+                            "tp": tp,
+                            "timeframe": "5m"
+                        }
+                        
+                        sent = send_telegram_once(symbol, result["main_signal"], result)
+                        
+                        if sent:
+                            # Siapkan data lengkap
+                            signal_save_data = {
+                                'symbol': symbol,
+                                'signal': result["main_signal"],
+                                'entry_price': entry,
+                                'stop_loss': sl,
+                                'take_profit': tp,
+                                'trend_1h': result.get("trend_1h", "⏳ WAIT"),
+                                'trend_15m': result.get("trend_15m", "⏳ WAIT"),
+                                'score': result.get("total_score", 50),
+                                'confidence': (result.get("confirmations", 0) / 3) * 100 if result.get("confirmations", 0) > 0 else 0,
+                                'smart_money_score': result.get("smart_money", {}).get("score", 50),
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            
+                            if save_signal(signal_save_data):
+                                stats = get_performance()
+                                stats['total_signals'] = stats.get('total_signals', 0) + 1
+                                update_performance(stats)
 
     progress_bar.empty()
     status_text.empty()
