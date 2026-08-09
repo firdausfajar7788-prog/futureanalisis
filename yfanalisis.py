@@ -148,8 +148,15 @@ def remove_coin(symbol):
         return False
 
 def save_signal(data):
+    """Simpan sinyal dengan cegah duplikat"""
     supabase = get_supabase()
     try:
+        # Cek duplikat
+        symbol = data.get("symbol")
+        signal = data.get("signal")
+        if is_duplicate_signal(symbol, signal, minutes=5):
+            return False  # Skip save
+        
         data["timestamp"] = datetime.now().isoformat()
         supabase.table("signal_history").insert(data).execute()
         return True
@@ -252,6 +259,44 @@ def send_telegram_test(message):
     except:
         pass
     return False
+
+# =========================================================
+# cekcekckekcec
+# =========================================================
+
+
+def is_duplicate_signal(symbol, signal, minutes=5):
+    """Cek apakah sinyal sudah ada dalam X menit terakhir"""
+    supabase = get_supabase()
+    try:
+        five_min_ago = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        res = supabase.table("signal_history")\
+            .select("id")\
+            .eq("symbol", symbol)\
+            .eq("signal", signal)\
+            .gte("timestamp", five_min_ago)\
+            .execute()
+        return len(res.data) > 0
+    except:
+        return False
+
+def is_duplicate_trade(symbol, trade_type, minutes=5):
+    """Cek apakah trade sudah ada dalam X menit terakhir"""
+    supabase = get_supabase()
+    try:
+        five_min_ago = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+        res = supabase.table("trades")\
+            .select("id")\
+            .eq("symbol", symbol)\
+            .eq("type", trade_type)\
+            .gte("entry_time", five_min_ago)\
+            .execute()
+        return len(res.data) > 0
+    except:
+        return False
+
+
+
 
 # =========================================================
 # FORMAT PRICE
