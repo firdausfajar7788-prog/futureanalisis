@@ -806,9 +806,17 @@ with tab1:
                         # Kirim telegram sekali
                         sent = send_telegram_once(symbol, result["main_signal"], result)
                         if sent:
-                            save_signal({
+                            if save_signal({
                                 'symbol': symbol,
                                 'signal': result["main_signal"],
+                                'entry_price': entry,           # <--- TAMBAHKAN
+                                'stop_loss': sl,                # <--- TAMBAHKAN
+                                'take_profit': tp,              # <--- TAMBAHKAN
+                                'trend_1h': result.get("trend_1h", ""),
+                                'trend_15m': result.get("trend_15m", ""),
+                                'score': result.get("total_score", 0),
+                                'confidence': result.get("confirmations", 0) / 3 * 100,
+                                'smart_money_score': result.get("smart_money", {}).get("score", 0),
                                 'timestamp': datetime.now().isoformat()
                             })
                             stats = get_performance()
