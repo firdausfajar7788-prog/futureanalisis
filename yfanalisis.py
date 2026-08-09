@@ -832,55 +832,55 @@ with tab1:
             all_signals.append(signal_data)
 
                     # Simpan pending signal jika sinyal kuat (BUY/SELL)
-                    if result["main_strength"] >= 2 and ("BUY" in result["main_signal"] or "SELL" in result["main_signal"]):
-                        df_5m = get_data_safe(symbol, "5m", min_candles=20)
-                        if df_5m is not None:
-                            price = df_5m["Close"].iloc[-1]
-                            atr = AverageTrueRange(df_5m["High"], df_5m["Low"], df_5m["Close"], window=14).average_true_range().iloc[-1]
-                            if pd.isna(atr) or atr == 0:
-                                atr = price * 0.01
-                            
-                            if "BUY" in result["main_signal"]:
-                                entry = price
-                                sl = entry - atr * 3
-                                tp = entry + atr * 7
-                            else:
-                                entry = price
-                                sl = entry + atr * 3
-                                tp = entry - atr * 7
-                            
-                            if symbol not in st.session_state.pending_signal:
-                                st.session_state.pending_signal[symbol] = {
-                                    "signal": result["main_signal"],
-                                    "time": datetime.now(),
-                                    "entry": entry,
-                                    "sl": sl,
-                                    "tp": tp,
-                                    "timeframe": "5m"
-                                }
+                        if result["main_strength"] >= 2 and ("BUY" in result["main_signal"] or "SELL" in result["main_signal"]):
+                            df_5m = get_data_safe(symbol, "5m", min_candles=20)
+                            if df_5m is not None:
+                                price = df_5m["Close"].iloc[-1]
+                                atr = AverageTrueRange(df_5m["High"], df_5m["Low"], df_5m["Close"], window=14).average_true_range().iloc[-1]
+                                if pd.isna(atr) or atr == 0:
+                                    atr = price * 0.01
                                 
-                                sent = send_telegram_once(symbol, result["main_signal"], result)
+                                if "BUY" in result["main_signal"]:
+                                    entry = price
+                                    sl = entry - atr * 3
+                                    tp = entry + atr * 7
+                                else:
+                                    entry = price
+                                    sl = entry + atr * 3
+                                    tp = entry - atr * 7
                                 
-                                if sent:
-                                    # === PERBAIKI: Ambil data dari result dengan benar ===
-                                    signal_data = {
-                                        'symbol': symbol,
-                                        'signal': result["main_signal"],
-                                        'entry_price': entry,
-                                        'stop_loss': sl,
-                                        'take_profit': tp,
-                                        'trend_1h': result.get("trend_1h", "⏳ WAIT"),      # <--- SUDAH ADA DI result
-                                        'trend_15m': result.get("trend_15m", "⏳ WAIT"),    # <--- SUDAH ADA DI result
-                                        'score': result.get("total_score", 50),
-                                        'confidence': (result.get("confirmations", 0) / 3) * 100 if result.get("confirmations", 0) > 0 else 0,
-                                        'smart_money_score': result.get("smart_money", {}).get("score", 50),
-                                        'timestamp': datetime.now().isoformat()
+                                if symbol not in st.session_state.pending_signal:
+                                    st.session_state.pending_signal[symbol] = {
+                                        "signal": result["main_signal"],
+                                        "time": datetime.now(),
+                                        "entry": entry,
+                                        "sl": sl,
+                                        "tp": tp,
+                                        "timeframe": "5m"
                                     }
                                     
-                                    if save_signal(signal_data):
-                                        stats = get_performance()
-                                        stats['total_signals'] = stats.get('total_signals', 0) + 1
-                                        update_performance(stats)
+                                    sent = send_telegram_once(symbol, result["main_signal"], result)
+                                    
+                                    if sent:
+                                        # === PERBAIKI: Ambil data dari result dengan benar ===
+                                        signal_data = {
+                                            'symbol': symbol,
+                                            'signal': result["main_signal"],
+                                            'entry_price': entry,
+                                            'stop_loss': sl,
+                                            'take_profit': tp,
+                                            'trend_1h': result.get("trend_1h", "⏳ WAIT"),      # <--- SUDAH ADA DI result
+                                            'trend_15m': result.get("trend_15m", "⏳ WAIT"),    # <--- SUDAH ADA DI result
+                                            'score': result.get("total_score", 50),
+                                            'confidence': (result.get("confirmations", 0) / 3) * 100 if result.get("confirmations", 0) > 0 else 0,
+                                            'smart_money_score': result.get("smart_money", {}).get("score", 50),
+                                            'timestamp': datetime.now().isoformat()
+                                        }
+                                        
+                                        if save_signal(signal_data):
+                                            stats = get_performance()
+                                            stats['total_signals'] = stats.get('total_signals', 0) + 1
+                                            update_performance(stats)
 
     progress_bar.empty()
     status_text.empty()
