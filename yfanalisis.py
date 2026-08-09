@@ -193,6 +193,7 @@ def get_performance():
     except:
         return default
 
+ 
 # =========================================================
 # TELEGRAM FUNCTIONS - ANTI DUPLICATE
 # =========================================================
@@ -264,7 +265,11 @@ def send_telegram_test(message):
 # cekcekckekcec
 # =========================================================
 
+# =========================================================
+# DATABASE FUNCTIONS
+# =========================================================
 
+# 1. DEFINE FUNGSI CEK DUPLIKAT DULU
 def is_duplicate_signal(symbol, signal, minutes=5):
     """Cek apakah sinyal sudah ada dalam X menit terakhir"""
     supabase = get_supabase()
@@ -292,6 +297,38 @@ def is_duplicate_trade(symbol, trade_type, minutes=5):
             .gte("entry_time", five_min_ago)\
             .execute()
         return len(res.data) > 0
+    except:
+        return False
+
+# 2. BARU DEFINE FUNGSI SAVE
+def save_signal(data):
+    """Simpan sinyal dengan cegah duplikat"""
+    supabase = get_supabase()
+    try:
+        symbol = data.get("symbol")
+        signal = data.get("signal")
+        if is_duplicate_signal(symbol, signal, minutes=5):
+            return False
+        
+        data["timestamp"] = datetime.now().isoformat()
+        supabase.table("signal_history").insert(data).execute()
+        return True
+    except:
+        return False
+
+def save_trade(data):
+    """Simpan trade dengan cegah duplikat"""
+    supabase = get_supabase()
+    try:
+        symbol = data.get("symbol")
+        trade_type = data.get("type")
+        if is_duplicate_trade(symbol, trade_type, minutes=5):
+            return False
+        
+        data["entry_time"] = datetime.now().isoformat()
+        data["status"] = "OPEN"
+        supabase.table("trades").insert(data).execute()
+        return True
     except:
         return False
 
@@ -805,23 +842,27 @@ with tab1:
                         }
                         # Kirim telegram sekali
                         sent = send_telegram_once(symbol, result["main_signal"], result)
+                            # === SESUDAH (BENAR) ===
                         if sent:
-                            if save_signal({
+                            # Siapkan data lengkap
+                            signal_data = {
                                 'symbol': symbol,
                                 'signal': result["main_signal"],
-                                'entry_price': entry,           # <--- TAMBAHKAN
-                                'stop_loss': sl,                # <--- TAMBAHKAN
-                                'take_profit': tp,              # <--- TAMBAHKAN
+                                'entry_price': entry,
+                                'stop_loss': sl,
+                                'take_profit': tp,
                                 'trend_1h': result.get("trend_1h", ""),
                                 'trend_15m': result.get("trend_15m", ""),
                                 'score': result.get("total_score", 0),
-                                'confidence': result.get("confirmations", 0) / 3 * 100,
+                                'confidence': (result.get("confirmations", 0) / 3) * 100 if result.get("confirmations", 0) > 0 else 0,
                                 'smart_money_score': result.get("smart_money", {}).get("score", 0),
                                 'timestamp': datetime.now().isoformat()
-                            })
-                            stats = get_performance()
-                            stats['total_signals'] = stats.get('total_signals', 0) + 1
-                            update_performance(stats)
+                            }
+                            
+                            if save_signal(signal_data):
+                                stats = get_performance()
+                                stats['total_signals'] = stats.get('total_signals', 0) + 1
+                                update_performance(stats)
 
     progress_bar.empty()
     status_text.empty()
