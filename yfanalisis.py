@@ -729,7 +729,7 @@ if "performance_stats" not in st.session_state:
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖)
+st.title("🤖")
 st.caption("Multi Timeframe: 15M | 1H | 4H | MACD + Stochastic RSI + EMA + Volume")
 
 # =========================================================
