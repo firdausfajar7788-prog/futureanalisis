@@ -19,7 +19,7 @@ warnings.filterwarnings('ignore')
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="🤖 Crypto Bot PRO - MACD + Stoch RSI",
+    page_title="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -729,7 +729,7 @@ if "performance_stats" not in st.session_state:
 # =========================================================
 # MAIN TITLE
 # =========================================================
-st.title("🤖 Crypto Bot PRO - MACD + Stoch RSI")
+st.title("🤖)
 st.caption("Multi Timeframe: 15M | 1H | 4H | MACD + Stochastic RSI + EMA + Volume")
 
 # =========================================================
