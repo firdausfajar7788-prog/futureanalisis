@@ -9,6 +9,7 @@ import warnings
 import os
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
+from supabase import create_client, Client
 
 load_dotenv()
 warnings.filterwarnings('ignore')
@@ -82,20 +83,119 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
+# SUPABASE CONNECTION
+# =========================================================
+@st.cache_resource
+def get_supabase() -> Client:
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        try:
+            url = st.secrets["supabase"]["url"]
+            key = st.secrets["supabase"]["key"]
+        except:
+            st.error("❌ SUPABASE_URL atau SUPABASE_KEY tidak ditemukan")
+            st.stop()
+    return create_client(url, key)
+
+# =========================================================
+# DATABASE FUNCTIONS (Watchlist)
+# =========================================================
+def get_watchlist():
+    supabase = get_supabase()
+    try:
+        res = supabase.table("watchlist").select("symbol").order("added_at").execute()
+        return [row["symbol"] for row in res.data] if res.data else ["BTC", "ETH", "BNB", "SOL", "XRP"]
+    except:
+        return ["BTC", "ETH", "BNB", "SOL", "XRP"]
+
+def add_coin(symbol):
+    supabase = get_supabase()
+    try:
+        supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
+        return True
+    except:
+        return False
+
+def remove_coin(symbol):
+    supabase = get_supabase()
+    try:
+        res = supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
+        return len(res.data) > 0
+    except:
+        return False
+
+# =========================================================
+# DATABASE FUNCTIONS (Volume Alerts)
+# =========================================================
+def save_volume_alert(data):
+    supabase = get_supabase()
+    try:
+        # Cek duplikat 5 menit
+        five_min_ago = (datetime.now() - timedelta(minutes=5)).isoformat()
+        check = supabase.table("volume_alerts")\
+            .select("id")\
+            .eq("symbol", data["symbol"])\
+            .gte("timestamp", five_min_ago)\
+            .execute()
+        if len(check.data) > 0:
+            return False
+        
+        data["timestamp"] = datetime.now().isoformat()
+        supabase.table("volume_alerts").insert(data).execute()
+        return True
+    except:
+        return False
+
+def get_volume_alerts(limit=100):
+    supabase = get_supabase()
+    try:
+        res = supabase.table("volume_alerts")\
+            .select("*")\
+            .order("timestamp", desc=True)\
+            .limit(limit)\
+            .execute()
+        return res.data if res.data else []
+    except:
+        return []
+
+def update_stats(stats):
+    supabase = get_supabase()
+    try:
+        supabase.table("performance").upsert(
+            {"key": "volume_stats", "value": stats, "updated_at": datetime.now().isoformat()},
+            on_conflict="key"
+        ).execute()
+        return True
+    except:
+        return False
+
+def get_stats():
+    supabase = get_supabase()
+    default = {"total_alerts": 0, "today_alerts": 0, "avg_ratio": 0}
+    try:
+        res = supabase.table("performance").select("value").eq("key", "volume_stats").execute()
+        if res.data and len(res.data) > 0:
+            return res.data[0]["value"]
+        return default
+    except:
+        return default
+
+# =========================================================
 # SESSION STATE
 # =========================================================
 if "watchlist" not in st.session_state:
-    st.session_state.watchlist = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "AVAX", "MATIC", "LINK"]
+    st.session_state.watchlist = get_watchlist()
 if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
-if "volume_alerts" not in st.session_state:
-    st.session_state.volume_alerts = {}
+if "volume_alerts_sent" not in st.session_state:
+    st.session_state.volume_alerts_sent = {}
 
 # =========================================================
 # HEADER
 # =========================================================
 st.title("📊 Volume Monitor - Crypto")
-st.caption("Monitoring volume per jam | Deteksi lonjakan volume | Real-time dari Yahoo Finance")
+st.caption("Monitoring volume per jam | Deteksi lonjakan volume | Supabase + Telegram")
 col_time, _ = st.columns([2, 3])
 with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -115,8 +215,11 @@ with st.sidebar:
             if new_coin:
                 coin = new_coin.upper().strip()
                 if coin not in st.session_state.watchlist:
-                    st.session_state.watchlist.append(coin)
-                    st.rerun()
+                    if add_coin(coin):
+                        st.session_state.watchlist.append(coin)
+                        st.rerun()
+                    else:
+                        st.error("❌ Gagal tambah coin!")
                 else:
                     st.warning(f"⚠️ {coin} already exists!")
     
@@ -126,22 +229,28 @@ with st.sidebar:
         col_idx = idx % 3
         with cols[col_idx]:
             if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
-                st.session_state.watchlist.remove(coin)
-                st.rerun()
+                if remove_coin(coin):
+                    st.session_state.watchlist.remove(coin)
+                    st.rerun()
+                else:
+                    st.error(f"❌ Gagal hapus {coin}!")
     
     st.divider()
     
     st.subheader("📊 Settings")
     refresh = st.slider("🔄 Refresh (detik)", 10, 120, 30)
     volume_threshold = st.slider("🚨 Alert Threshold (x avg)", 1.5, 5.0, 2.5, 0.5)
+    lookback_hours = st.slider("📊 Lookback (jam)", 12, 72, 24)
     
     st.divider()
+    
     st.subheader("📱 Telegram Alert")
     bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
     chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
     
-    if st.button("🚀 Test Telegram", use_container_width=True):
-        if bot_token and chat_id:
+    if bot_token and chat_id:
+        st.success("✅ Telegram Connected")
+        if st.button("🚀 Test Telegram", use_container_width=True):
             try:
                 url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
                 r = requests.post(url, json={"chat_id": chat_id, "text": "📊 Volume Monitor Aktif!"}, timeout=10)
@@ -151,52 +260,50 @@ with st.sidebar:
                     st.error(f"❌ Error: {r.status_code}")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
-        else:
-            st.warning("⚠️ Isi Bot Token dan Chat ID di secrets")
+    else:
+        st.warning("⚠️ Bot Token & Chat ID tidak ditemukan")
     
     st.divider()
+    
+    st.subheader("📊 Stats")
+    stats = get_stats()
+    st.metric("Total Alerts", stats.get("total_alerts", 0))
+    st.metric("Today Alerts", stats.get("today_alerts", 0))
+    st.metric("Avg Ratio", f"{stats.get('avg_ratio', 0):.2f}x")
+    
     st.caption("📊 **Volume Level:**")
-    st.caption("🟢 High (> 2x avg)")
+    st.caption("🟢 High (> 2x avg) - Potensi breakout")
     st.caption("🟡 Normal (0.5x - 2x avg)")
-    st.caption("🔴 Low (< 0.5x avg)")
+    st.caption("🔴 Low (< 0.5x avg) - Sepi")
 
 # =========================================================
 # FUNGSI AMBIL DATA
 # =========================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def get_volume_data(symbol, period="7d", interval="1h"):
-    """Ambil data volume per jam"""
     try:
         ticker = f"{symbol}-USD"
         df = yf.download(ticker, interval=interval, period=period, progress=False)
         if df.empty:
             return None
-        
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-        
         df = df.reset_index()
         df.rename(columns={df.columns[0]: "Time"}, inplace=True)
         df["Time"] = pd.to_datetime(df["Time"])
-        
-        # Tambahkan kolom volume
         df["Volume"] = df["Volume"].fillna(0)
-        
         return df
-    except Exception as e:
-        print(f"Error {symbol}: {e}")
+    except:
         return None
 
-@st.cache_data(ttl=30, show_springer=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def get_all_volume_data(symbols, interval="1h", hours=24):
-    """Ambil data volume untuk semua simbol"""
     results = {}
     for symbol in symbols:
         df = get_volume_data(symbol, period="7d", interval=interval)
         if df is not None and not df.empty:
-            # Ambil 24 jam terakhir
             df_24h = df.tail(hours)
-            if len(df_24h) >= 12:  # Minimal 12 jam data
+            if len(df_24h) >= 12:
                 results[symbol] = {
                     "df": df,
                     "df_24h": df_24h,
@@ -211,25 +318,26 @@ def get_all_volume_data(symbols, interval="1h", hours=24):
     return results
 
 # =========================================================
-# FUNGSI TELEGRAM ALERT
+# TELEGRAM ALERT
 # =========================================================
-def send_telegram_alert(symbol, volume_ratio, volume, avg_volume, price):
-    """Kirim alert ke Telegram"""
+def send_telegram_alert(symbol, volume_ratio, volume, avg_volume, price, price_change):
     try:
         bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
         if not bot_token or not chat_id:
             return False
         
-        msg = f"""🚨 <b>VOLUME SPIKE DETECTED!</b>
+        emoji = "🚀🚀🚀" if volume_ratio > 3 else "🚀🚀" if volume_ratio > 2.5 else "🚀"
+        msg = f"""{emoji} <b>VOLUME SPIKE!</b>
 
 <b>Coin:</b> {symbol}
-<b>Current Volume:</b> {volume:,.0f}
-<b>Avg Volume (24h):</b> {avg_volume:,.0f}
-<b>Ratio:</b> {volume_ratio:.2f}x
+<b>Volume:</b> {volume:,.0f}
+<b>Avg 24h:</b> {avg_volume:,.0f}
+<b>Ratio:</b> <b>{volume_ratio:.2f}x</b>
 <b>Price:</b> ${price:.4f}
-🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-"""
+<b>24h Change:</b> {price_change:.2f}%
+🕐 {datetime.now().strftime('%H:%M:%S')}"""
+        
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         r = requests.post(url, json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"}, timeout=10)
         return r.status_code == 200
@@ -254,15 +362,13 @@ def format_volume(value):
 # =========================================================
 st_autorefresh(interval=refresh * 1000, key="refresh")
 
-# Ambil data
 with st.spinner("📊 Mengambil data volume..."):
-    data = get_all_volume_data(st.session_state.watchlist, interval="1h", hours=24)
+    data = get_all_volume_data(st.session_state.watchlist, interval="1h", hours=lookback_hours)
 
 if not data:
     st.warning("⚠️ Tidak ada data yang bisa ditampilkan")
     st.stop()
 
-# Update waktu
 st.session_state.last_update = datetime.now()
 
 # =========================================================
@@ -271,243 +377,173 @@ st.session_state.last_update = datetime.now()
 total_volume = sum([d["last_volume"] for d in data.values()])
 high_volume = len([d for d in data.values() if d["volume_ratio"] > 2])
 low_volume = len([d for d in data.values() if d["volume_ratio"] < 0.5])
+avg_ratio = sum([d["volume_ratio"] for d in data.values()]) / len(data) if data else 0
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("🪙 Coins", len(data))
 c2.metric("📊 Total 1H Volume", format_volume(total_volume))
-c3.metric("🟢 High Volume (>2x)", high_volume)
-c4.metric("🔴 Low Volume (<0.5x)", low_volume)
+c3.metric("🟢 High (>2x)", high_volume)
+c4.metric("🔴 Low (<0.5x)", low_volume)
+c5.metric("📈 Avg Ratio", f"{avg_ratio:.2f}x")
 
 # =========================================================
 # VOLUME ALERTS
 # =========================================================
 alerts = []
+stats = get_stats()
+
 for symbol, d in data.items():
     if d["volume_ratio"] > volume_threshold:
         alerts.append({
             "Coin": symbol,
-            "Volume Ratio": f"{d['volume_ratio']:.2f}x",
-            "Current Volume": format_volume(d["last_volume"]),
-            "Avg Volume (24h)": format_volume(d["avg_volume"]),
+            "Ratio": f"{d['volume_ratio']:.2f}x",
+            "Volume": format_volume(d["last_volume"]),
+            "Avg 24h": format_volume(d["avg_volume"]),
             "Price": f"${d['last_price']:.4f}",
             "24h Change": f"{d['price_change']:.2f}%"
         })
         
-        # Kirim Telegram jika belum dikirim dalam 30 menit
-        if symbol not in st.session_state.volume_alerts or \
-           (datetime.now() - st.session_state.volume_alerts[symbol]).seconds > 1800:
-            if send_telegram_alert(symbol, d["volume_ratio"], d["last_volume"], d["avg_volume"], d["last_price"]):
-                st.session_state.volume_alerts[symbol] = datetime.now()
+        now = datetime.now()
+        if symbol not in st.session_state.volume_alerts_sent or \
+           (now - st.session_state.volume_alerts_sent[symbol]).seconds > 1800:
+            if send_telegram_alert(symbol, d["volume_ratio"], d["last_volume"], d["avg_volume"], d["last_price"], d["price_change"]):
+                st.session_state.volume_alerts_sent[symbol] = now
+                alert_data = {
+                    "symbol": symbol,
+                    "volume": d["last_volume"],
+                    "avg_volume": d["avg_volume"],
+                    "ratio": d["volume_ratio"],
+                    "price": d["last_price"],
+                    "price_change": d["price_change"],
+                    "threshold": volume_threshold
+                }
+                if save_volume_alert(alert_data):
+                    stats["total_alerts"] = stats.get("total_alerts", 0) + 1
+                    stats["today_alerts"] = stats.get("today_alerts", 0) + 1
+                    old_avg = stats.get("avg_ratio", 0)
+                    old_count = stats.get("total_alerts", 0) - 1
+                    if old_count > 0:
+                        stats["avg_ratio"] = ((old_avg * old_count) + d["volume_ratio"]) / (old_count + 1)
+                    else:
+                        stats["avg_ratio"] = d["volume_ratio"]
+                    update_stats(stats)
 
 # =========================================================
 # ALERT SECTION
 # =========================================================
 if alerts:
     st.subheader("🚨 Volume Spikes Detected!")
-    st.caption(f"Threshold: {volume_threshold}x above average")
-    df_alerts = pd.DataFrame(alerts)
-    st.dataframe(df_alerts, use_container_width=True, hide_index=True)
+    st.caption(f"Threshold: {volume_threshold}x | Total spikes: {len(alerts)}")
+    st.dataframe(pd.DataFrame(alerts), use_container_width=True, hide_index=True)
 else:
-    st.info("✅ Tidak ada lonjakan volume yang terdeteksi")
+    st.info("✅ Tidak ada lonjakan volume")
 
 # =========================================================
 # VOLUME TABLE
 # =========================================================
-st.subheader("📊 Volume per Coin (Last 24 Hours)")
+st.subheader("📊 Volume per Coin")
 
 table_data = []
 for symbol, d in data.items():
-    # Tentukan status
-    if d["volume_ratio"] > 2:
-        status = "🟢 HIGH"
-        status_class = "volume-spike"
-    elif d["volume_ratio"] < 0.5:
-        status = "🔴 LOW"
-        status_class = "volume-low"
-    else:
-        status = "🟡 NORMAL"
-        status_class = "volume-normal"
-    
+    status = "🟢 HIGH" if d["volume_ratio"] > 2 else "🔴 LOW" if d["volume_ratio"] < 0.5 else "🟡 NORMAL"
     table_data.append({
         "Coin": symbol,
-        "Last Volume": format_volume(d["last_volume"]),
-        "Avg Volume (24h)": format_volume(d["avg_volume"]),
+        "Volume": format_volume(d["last_volume"]),
+        "Avg 24h": format_volume(d["avg_volume"]),
         "Ratio": f"{d['volume_ratio']:.2f}x",
         "Price": f"${d['last_price']:.4f}",
         "24h Change": f"{d['price_change']:.2f}%",
         "Status": status
     })
 
-df_table = pd.DataFrame(table_data)
-df_table = df_table.sort_values("Ratio", ascending=False)
+df_table = pd.DataFrame(table_data).sort_values("Ratio", ascending=False)
 
-# Tampilkan sebagai metric cards
+# Top 4 Cards
+st.subheader("🔥 Top Coins by Volume Ratio")
 cols = st.columns(min(len(data), 4))
 for idx, (symbol, d) in enumerate(data.items()):
     if idx >= 4:
         break
-    col_idx = idx % len(cols)
-    with cols[col_idx]:
+    with cols[idx]:
         ratio = d["volume_ratio"]
-        if ratio > 2:
-            bg = "rgba(0,255,136,0.1)"
-            border = "#00ff88"
-            label = "🚀 HIGH"
-        elif ratio < 0.5:
-            bg = "rgba(255,59,92,0.1)"
-            border = "#ff3b5c"
-            label = "🔽 LOW"
-        else:
-            bg = "rgba(255,170,0,0.1)"
-            border = "#ffaa00"
-            label = "➡️ NORMAL"
-        
+        border = "#00ff88" if ratio > 2 else "#ff3b5c" if ratio < 0.5 else "#ffaa00"
+        label = "🚀 HIGH" if ratio > 2 else "🔽 LOW" if ratio < 0.5 else "➡️ NORMAL"
         st.markdown(f"""
-        <div style="background:{bg}; border:1px solid {border}; border-radius:12px; padding:15px; margin:5px;">
+        <div style="background:rgba(17,24,39,0.8); border:1px solid {border}; border-radius:12px; padding:15px; margin:5px;">
             <h3 style="margin:0; color:#f1f5f9;">{symbol}</h3>
             <div style="display:flex; justify-content:space-between;">
                 <span style="color:#94a3b8;">Volume</span>
                 <span style="color:#f1f5f9; font-weight:700;">{format_volume(d['last_volume'])}</span>
             </div>
             <div style="display:flex; justify-content:space-between;">
-                <span style="color:#94a3b8;">Avg 24h</span>
-                <span style="color:#f1f5f9;">{format_volume(d['avg_volume'])}</span>
-            </div>
-            <div style="display:flex; justify-content:space-between;">
                 <span style="color:#94a3b8;">Ratio</span>
                 <span style="color:{border}; font-weight:700;">{d['volume_ratio']:.2f}x</span>
             </div>
-            <div style="margin-top:8px; text-align:center; color:{border}; font-weight:600;">
-                {label}
-            </div>
+            <div style="margin-top:8px; text-align:center; color:{border}; font-weight:600;">{label}</div>
         </div>
         """, unsafe_allow_html=True)
 
-# =========================================================
-# FULL TABLE
-# =========================================================
 st.dataframe(df_table, use_container_width=True, hide_index=True)
 
 # =========================================================
-# CHART - Volume & Price
+# CHART
 # =========================================================
 st.divider()
-st.subheader("📈 Volume Chart (Selected Coin)")
+st.subheader("📈 Volume Chart")
 
-selected_coin = st.selectbox("Select Coin for Chart", st.session_state.watchlist)
+selected_coin = st.selectbox("Select Coin", st.session_state.watchlist)
 
 if selected_coin in data:
     d = data[selected_coin]
     df = d["df"]
-    
     if df is not None and not df.empty:
-        # Filter 7 hari terakhir
-        df_chart = df.tail(168)  # 7 hari x 24 jam
+        df_chart = df.tail(168)
         
-        fig = make_subplots(
-            rows=2, cols=1,
-            shared_xaxes=True,
-            vertical_spacing=0.05,
-            row_heights=[0.6, 0.4],
-            subplot_titles=(f"{selected_coin} - Price", "Volume per Hour")
-        )
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                            row_heights=[0.6, 0.4],
+                            subplot_titles=(f"{selected_coin} - Price", "Volume per Hour"))
         
-        # Price chart
-        fig.add_trace(go.Scatter(
-            x=df_chart["Time"],
-            y=df_chart["Close"],
-            line=dict(color="#00a2ff", width=2),
-            name="Price"
-        ), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_chart["Time"], y=df_chart["Close"],
+                                 line=dict(color="#00a2ff", width=2), name="Price"), row=1, col=1)
         
-        # Volume chart dengan warna berbeda
         avg_volume = d["avg_volume"]
-        colors = []
-        for vol in df_chart["Volume"]:
-            if vol > avg_volume * 2:
-                colors.append("#00ff88")  # High
-            elif vol < avg_volume * 0.5:
-                colors.append("#ff3b5c")  # Low
-            else:
-                colors.append("#ffaa00")  # Normal
+        colors = ["#00ff88" if v > avg_volume * 2 else "#ff3b5c" if v < avg_volume * 0.5 else "#ffaa00" 
+                  for v in df_chart["Volume"]]
         
-        fig.add_trace(go.Bar(
-            x=df_chart["Time"],
-            y=df_chart["Volume"],
-            marker_color=colors,
-            name="Volume"
-        ), row=2, col=1)
+        fig.add_trace(go.Bar(x=df_chart["Time"], y=df_chart["Volume"], marker_color=colors, name="Volume"), row=2, col=1)
+        fig.add_hline(y=avg_volume, line_dash="dash", line_color="#ffaa00", 
+                      annotation_text="Avg Volume", row=2, col=1)
         
-        # Garis rata-rata volume
-        fig.add_hline(
-            y=avg_volume,
-            line_dash="dash",
-            line_color="#ffaa00",
-            annotation_text="Avg Volume",
-            row=2, col=1
-        )
-        
-        fig.update_layout(
-            template="plotly_dark",
-            height=600,
-            showlegend=False,
-            plot_bgcolor="#0a0a1a",
-            paper_bgcolor="#0a0a1a",
-            font=dict(color="#94a3b8")
-        )
+        fig.update_layout(template="plotly_dark", height=600, showlegend=False,
+                          plot_bgcolor="#0a0a1a", paper_bgcolor="#0a0a1a")
         fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
         fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Tampilkan statistik
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Last Volume", format_volume(d["last_volume"]))
-        col2.metric("Avg Volume (24h)", format_volume(d["avg_volume"]))
-        col3.metric("Max Volume (24h)", format_volume(d["max_volume"]))
-        col4.metric("Volume Ratio", f"{d['volume_ratio']:.2f}x")
-    else:
-        st.warning("Data tidak tersedia")
-else:
-    st.warning(f"Data untuk {selected_coin} tidak ditemukan")
+        col2.metric("Avg 24h", format_volume(d["avg_volume"]))
+        col3.metric("Max 24h", format_volume(d["max_volume"]))
+        col4.metric("Ratio", f"{d['volume_ratio']:.2f}x")
 
 # =========================================================
-# VOLUME HISTORY (per jam)
+# ALERT HISTORY
 # =========================================================
-with st.expander("📊 Volume History (Last 24 Hours)"):
-    history_data = []
-    for symbol, d in data.items():
-        df_24h = d["df_24h"]
-        if df_24h is not None and not df_24h.empty:
-            for _, row in df_24h.iterrows():
-                history_data.append({
-                    "Time": row["Time"],
-                    "Coin": symbol,
-                    "Volume": row["Volume"],
-                    "Price": row["Close"]
-                })
-    
-    if history_data:
-        df_history = pd.DataFrame(history_data)
-        df_history = df_history.sort_values("Time", ascending=False)
-        st.dataframe(df_history.head(100), use_container_width=True, hide_index=True)
-        
-        # Download CSV
+with st.expander("📜 Alert History"):
+    history = get_volume_alerts(limit=50)
+    if history:
+        df_history = pd.DataFrame(history)
+        if 'id' in df_history.columns:
+            df_history = df_history.drop('id', axis=1)
+        st.dataframe(df_history, use_container_width=True, hide_index=True)
         csv = df_history.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            "📥 Download CSV",
-            csv,
-            f"volume_history_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv"
-        )
+        st.download_button("📥 Download CSV", csv, f"alerts_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
+    else:
+        st.info("Belum ada alert")
 
 # =========================================================
 # FOOTER
 # =========================================================
 st.divider()
-st.caption(
-    f"🔄 Last updated: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')} | "
-    f"Total Coins: {len(data)} | "
-    f"Data Source: Yahoo Finance | "
-    f"Auto Refresh: {refresh}s"
-)
+st.caption(f"🔄 Updated: {st.session_state.last_update.strftime('%H:%M:%S')} | {len(data)} coins | Threshold: {volume_threshold}x")
