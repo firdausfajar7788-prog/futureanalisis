@@ -598,7 +598,7 @@ for idx, (symbol, d) in enumerate(data.items()):
 st.dataframe(df_table, use_container_width=True, hide_index=True)
 
 # =========================================================
-# CHART DENGAN LIQUIDITY ZONES
+# CHART DENGAN LIQUIDITY ZONES - VERSI IMPROVED
 # =========================================================
 st.divider()
 st.subheader("📈 Volume Chart with Liquidity Zones")
@@ -608,10 +608,27 @@ selected_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="liq
 if selected_coin in data:
     d = data[selected_coin]
     df = d["df"]
+    
+    # Opsi: gunakan data alternatif
+    if use_alternative:
+        df_alt = get_crypto_data_alternative(selected_coin, interval="1h", limit=100)
+        if df_alt is not None:
+            df = df_alt
+    
     if df is not None and not df.empty:
-        # Deteksi zona likuiditas
+        # Deteksi zona likuiditas dengan parameter yang bisa diatur
         with st.spinner("🔍 Mendeteksi Liquidity Zones..."):
-            buy_zones, sell_zones = detect_liquidity_zones(df, length=7, margin=2.3)
+            buy_zones, sell_zones = detect_liquidity_zones_improved(
+                df, 
+                length=liquidity_length, 
+                margin=liquidity_margin,
+                min_group=min_pivot_group
+            )
+            
+            # Jika masih kosong, gunakan dummy
+            if not buy_zones and not sell_zones:
+                st.info("ℹ️ Tidak ada zona terdeteksi, menggunakan zona estimasi")
+                buy_zones, sell_zones = get_dummy_liquidity_zones(df)
         
         # Tampilkan jumlah zona
         col1, col2 = st.columns(2)
@@ -708,11 +725,17 @@ if selected_coin in data:
                 if buy_zones:
                     st.write("🟢 **Buyside Liquidity Zones**")
                     df_buy = pd.DataFrame(buy_zones)
+                    df_buy['price'] = df_buy['price'].apply(lambda x: f"${x:,.0f}")
+                    df_buy['high'] = df_buy['high'].apply(lambda x: f"${x:,.0f}")
+                    df_buy['low'] = df_buy['low'].apply(lambda x: f"${x:,.0f}")
                     st.dataframe(df_buy[['price', 'high', 'low']], use_container_width=True)
                 
                 if sell_zones:
                     st.write("🔴 **Sellside Liquidity Zones**")
                     df_sell = pd.DataFrame(sell_zones)
+                    df_sell['price'] = df_sell['price'].apply(lambda x: f"${x:,.0f}")
+                    df_sell['high'] = df_sell['high'].apply(lambda x: f"${x:,.0f}")
+                    df_sell['low'] = df_sell['low'].apply(lambda x: f"${x:,.0f}")
                     st.dataframe(df_sell[['price', 'high', 'low']], use_container_width=True)
     else:
         st.warning("Data tidak tersedia")
