@@ -358,12 +358,11 @@ def format_volume(value):
         return f"{value:.0f}"
 
 # =========================================================
-# LIQUIDITY ZONES DETECTION
+# LIQUIDITY ZONES DETECTION - VERSI IMPROVED
 # =========================================================
-def find_pivots(df, length=7):
+def find_pivots_improved(df, length=5, lookback=3):
     """
-    Mencari pivot high dan low
-    Sama seperti ta.pivothigh() dan ta.pivotlow() di Pine Script
+    Mencari pivot high/low dengan lebih akurat
     """
     highs = df['High']
     lows = df['Low']
@@ -373,137 +372,102 @@ def find_pivots(df, length=7):
     pivot_low_idx = []
     pivot_low_val = []
     
+    # Cari pivot dengan window yang lebih kecil
     for i in range(length, len(df) - length):
-        # Pivot High
-        is_high = True
-        for j in range(1, length + 1):
-            if highs.iloc[i] <= highs.iloc[i - j] or highs.iloc[i] <= highs.iloc[i + j]:
-                is_high = False
-                break
-        if is_high:
+        # Pivot High: harga tertinggi di antara window kiri dan kanan
+        left_high = max(highs.iloc[i-length:i])
+        right_high = max(highs.iloc[i+1:i+length+1])
+        
+        if highs.iloc[i] >= left_high and highs.iloc[i] >= right_high:
             pivot_high_idx.append(i)
             pivot_high_val.append(highs.iloc[i])
         
-        # Pivot Low
-        is_low = True
-        for j in range(1, length + 1):
-            if lows.iloc[i] >= lows.iloc[i - j] or lows.iloc[i] >= lows.iloc[i + j]:
-                is_low = False
-                break
-        if is_low:
+        # Pivot Low: harga terendah di antara window kiri dan kanan
+        left_low = min(lows.iloc[i-length:i])
+        right_low = min(lows.iloc[i+1:i+length+1])
+        
+        if lows.iloc[i] <= left_low and lows.iloc[i] <= right_low:
             pivot_low_idx.append(i)
             pivot_low_val.append(lows.iloc[i])
     
     return pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val
 
-def detect_liquidity_zones(df, length=7, margin=2.3):
+def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
     """
-    Deteksi zona likuiditas berdasarkan pivot yang berkelompok
+    Deteksi zona likuiditas - versi lebih sensitif
     """
     if df is None or len(df) < 30:
         return [], []
     
-    pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val = find_pivots(df, length)
+    pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val = find_pivots_improved(df, length)
     
-    # Hitung ATR
-    atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+    # Hitung ATR (Average True Range)
+    high_low = df['High'] - df['Low']
+    high_close = abs(df['High'] - df['Close'].shift())
+    low_close = abs(df['Low'] - df['Close'].shift())
+    ranges = pd.concat([high_low, high_close, low_close], axis=1)
+    true_range = ranges.max(axis=1)
+    atr = true_range.rolling(14).mean().iloc[-1]
+    
     if pd.isna(atr) or atr == 0:
-        atr = (df['High'] - df['Low']).mean() * 0.5
+        atr = df['Close'].std() * 0.5
     
     buy_zones = []
     sell_zones = []
     
-    # Cari buyside liquidity (pivot high berkelompok)
+    # Kelompokkan pivot high yang berdekatan (Buyside)
     i = 0
     while i < len(pivot_high_idx):
         group_idx = [pivot_high_idx[i]]
         group_val = [pivot_high_val[i]]
         j = i + 1
         while j < len(pivot_high_idx):
-            if abs(pivot_high_val[j] - pivot_high_val[i]) < atr / margin:
+            # Jika jarak harga < margin * ATR, kelompokkan
+            if abs(pivot_high_val[j] - pivot_high_val[i]) < atr * margin:
                 group_idx.append(pivot_high_idx[j])
                 group_val.append(pivot_high_val[j])
                 j += 1
             else:
                 break
         
-        if len(group_idx) >= 3:
+        # Minimal 2 pivot untuk membentuk zona
+        if len(group_idx) >= min_group:
             avg_price = sum(group_val) / len(group_val)
             buy_zones.append({
                 'start_idx': group_idx[0],
                 'end_idx': group_idx[-1],
                 'price': avg_price,
-                'high': avg_price + (atr / margin),
-                'low': avg_price - (atr / margin)
+                'high': avg_price + (atr * 0.5),
+                'low': avg_price - (atr * 0.5)
             })
         i = j if j > i else i + 1
     
-    # Cari sellside liquidity (pivot low berkelompok)
+    # Kelompokkan pivot low yang berdekatan (Sellside)
     i = 0
     while i < len(pivot_low_idx):
         group_idx = [pivot_low_idx[i]]
         group_val = [pivot_low_val[i]]
         j = i + 1
         while j < len(pivot_low_idx):
-            if abs(pivot_low_val[j] - pivot_low_val[i]) < atr / margin:
+            if abs(pivot_low_val[j] - pivot_low_val[i]) < atr * margin:
                 group_idx.append(pivot_low_idx[j])
                 group_val.append(pivot_low_val[j])
                 j += 1
             else:
                 break
         
-        if len(group_idx) >= 3:
+        if len(group_idx) >= min_group:
             avg_price = sum(group_val) / len(group_val)
             sell_zones.append({
                 'start_idx': group_idx[0],
                 'end_idx': group_idx[-1],
                 'price': avg_price,
-                'high': avg_price + (atr / margin),
-                'low': avg_price - (atr / margin)
+                'high': avg_price + (atr * 0.5),
+                'low': avg_price - (atr * 0.5)
             })
         i = j if j > i else i + 1
     
     return buy_zones, sell_zones
-
-def add_liquidity_zones_to_fig(fig, df, buy_zones, sell_zones):
-    """
-    Tambahkan zona likuiditas ke chart yang sudah ada
-    """
-    # Buyside Liquidity (Hijau)
-    for zone in buy_zones:
-        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
-            fig.add_hrect(
-                y0=zone['low'],
-                y1=zone['high'],
-                fillcolor='rgba(0,255,136,0.15)',
-                line=dict(color='rgba(0,255,136,0.6)', width=1, dash='dash'),
-                annotation_text=f"🟢 Buyside {zone['price']:,.0f}",
-                annotation_position="bottom left",
-                annotation_font=dict(color='#00ff88', size=10)
-            )
-            fig.add_hline(
-                y=zone['price'],
-                line=dict(color='rgba(0,255,136,0.3)', width=1, dash='dot')
-            )
-    
-    # Sellside Liquidity (Merah)
-    for zone in sell_zones:
-        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
-            fig.add_hrect(
-                y0=zone['low'],
-                y1=zone['high'],
-                fillcolor='rgba(255,59,92,0.15)',
-                line=dict(color='rgba(255,59,92,0.6)', width=1, dash='dash'),
-                annotation_text=f"🔴 Sellside {zone['price']:,.0f}",
-                annotation_position="top left",
-                annotation_font=dict(color='#ff3b5c', size=10)
-            )
-            fig.add_hline(
-                y=zone['price'],
-                line=dict(color='rgba(255,59,92,0.3)', width=1, dash='dot')
-            )
-    
-    return fig
 
 # =========================================================
 # MAIN
