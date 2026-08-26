@@ -358,6 +358,154 @@ def format_volume(value):
         return f"{value:.0f}"
 
 # =========================================================
+# LIQUIDITY ZONES DETECTION
+# =========================================================
+def find_pivots(df, length=7):
+    """
+    Mencari pivot high dan low
+    Sama seperti ta.pivothigh() dan ta.pivotlow() di Pine Script
+    """
+    highs = df['High']
+    lows = df['Low']
+    
+    pivot_high_idx = []
+    pivot_high_val = []
+    pivot_low_idx = []
+    pivot_low_val = []
+    
+    for i in range(length, len(df) - length):
+        # Pivot High
+        is_high = True
+        for j in range(1, length + 1):
+            if highs.iloc[i] <= highs.iloc[i - j] or highs.iloc[i] <= highs.iloc[i + j]:
+                is_high = False
+                break
+        if is_high:
+            pivot_high_idx.append(i)
+            pivot_high_val.append(highs.iloc[i])
+        
+        # Pivot Low
+        is_low = True
+        for j in range(1, length + 1):
+            if lows.iloc[i] >= lows.iloc[i - j] or lows.iloc[i] >= lows.iloc[i + j]:
+                is_low = False
+                break
+        if is_low:
+            pivot_low_idx.append(i)
+            pivot_low_val.append(lows.iloc[i])
+    
+    return pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val
+
+def detect_liquidity_zones(df, length=7, margin=2.3):
+    """
+    Deteksi zona likuiditas berdasarkan pivot yang berkelompok
+    """
+    if df is None or len(df) < 30:
+        return [], []
+    
+    pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val = find_pivots(df, length)
+    
+    # Hitung ATR
+    atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+    if pd.isna(atr) or atr == 0:
+        atr = (df['High'] - df['Low']).mean() * 0.5
+    
+    buy_zones = []
+    sell_zones = []
+    
+    # Cari buyside liquidity (pivot high berkelompok)
+    i = 0
+    while i < len(pivot_high_idx):
+        group_idx = [pivot_high_idx[i]]
+        group_val = [pivot_high_val[i]]
+        j = i + 1
+        while j < len(pivot_high_idx):
+            if abs(pivot_high_val[j] - pivot_high_val[i]) < atr / margin:
+                group_idx.append(pivot_high_idx[j])
+                group_val.append(pivot_high_val[j])
+                j += 1
+            else:
+                break
+        
+        if len(group_idx) >= 3:
+            avg_price = sum(group_val) / len(group_val)
+            buy_zones.append({
+                'start_idx': group_idx[0],
+                'end_idx': group_idx[-1],
+                'price': avg_price,
+                'high': avg_price + (atr / margin),
+                'low': avg_price - (atr / margin)
+            })
+        i = j if j > i else i + 1
+    
+    # Cari sellside liquidity (pivot low berkelompok)
+    i = 0
+    while i < len(pivot_low_idx):
+        group_idx = [pivot_low_idx[i]]
+        group_val = [pivot_low_val[i]]
+        j = i + 1
+        while j < len(pivot_low_idx):
+            if abs(pivot_low_val[j] - pivot_low_val[i]) < atr / margin:
+                group_idx.append(pivot_low_idx[j])
+                group_val.append(pivot_low_val[j])
+                j += 1
+            else:
+                break
+        
+        if len(group_idx) >= 3:
+            avg_price = sum(group_val) / len(group_val)
+            sell_zones.append({
+                'start_idx': group_idx[0],
+                'end_idx': group_idx[-1],
+                'price': avg_price,
+                'high': avg_price + (atr / margin),
+                'low': avg_price - (atr / margin)
+            })
+        i = j if j > i else i + 1
+    
+    return buy_zones, sell_zones
+
+def add_liquidity_zones_to_fig(fig, df, buy_zones, sell_zones):
+    """
+    Tambahkan zona likuiditas ke chart yang sudah ada
+    """
+    # Buyside Liquidity (Hijau)
+    for zone in buy_zones:
+        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
+            fig.add_hrect(
+                y0=zone['low'],
+                y1=zone['high'],
+                fillcolor='rgba(0,255,136,0.15)',
+                line=dict(color='rgba(0,255,136,0.6)', width=1, dash='dash'),
+                annotation_text=f"🟢 Buyside {zone['price']:,.0f}",
+                annotation_position="bottom left",
+                annotation_font=dict(color='#00ff88', size=10)
+            )
+            fig.add_hline(
+                y=zone['price'],
+                line=dict(color='rgba(0,255,136,0.3)', width=1, dash='dot')
+            )
+    
+    # Sellside Liquidity (Merah)
+    for zone in sell_zones:
+        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
+            fig.add_hrect(
+                y0=zone['low'],
+                y1=zone['high'],
+                fillcolor='rgba(255,59,92,0.15)',
+                line=dict(color='rgba(255,59,92,0.6)', width=1, dash='dash'),
+                annotation_text=f"🔴 Sellside {zone['price']:,.0f}",
+                annotation_position="top left",
+                annotation_font=dict(color='#ff3b5c', size=10)
+            )
+            fig.add_hline(
+                y=zone['price'],
+                line=dict(color='rgba(255,59,92,0.3)', width=1, dash='dot')
+            )
+    
+    return fig
+
+# =========================================================
 # MAIN
 # =========================================================
 st_autorefresh(interval=refresh * 1000, key="refresh")
@@ -486,47 +634,126 @@ for idx, (symbol, d) in enumerate(data.items()):
 st.dataframe(df_table, use_container_width=True, hide_index=True)
 
 # =========================================================
-# CHART
+# CHART DENGAN LIQUIDITY ZONES
 # =========================================================
 st.divider()
-st.subheader("📈 Volume Chart")
+st.subheader("📈 Volume Chart with Liquidity Zones")
 
-selected_coin = st.selectbox("Select Coin", st.session_state.watchlist)
+selected_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="liquidity_chart")
 
 if selected_coin in data:
     d = data[selected_coin]
     df = d["df"]
     if df is not None and not df.empty:
+        # Deteksi zona likuiditas
+        with st.spinner("🔍 Mendeteksi Liquidity Zones..."):
+            buy_zones, sell_zones = detect_liquidity_zones(df, length=7, margin=2.3)
+        
+        # Tampilkan jumlah zona
+        col1, col2 = st.columns(2)
+        col1.metric("🟢 Buyside Zones", len(buy_zones))
+        col2.metric("🔴 Sellside Zones", len(sell_zones))
+        
+        # Buat chart
         df_chart = df.tail(168)
         
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,
-                            row_heights=[0.6, 0.4],
-                            subplot_titles=(f"{selected_coin} - Price", "Volume per Hour"))
+        fig = make_subplots(
+            rows=3, cols=1, 
+            shared_xaxes=True, 
+            vertical_spacing=0.05,
+            row_heights=[0.5, 0.3, 0.2],
+            subplot_titles=(
+                f"{selected_coin} - Price & Liquidity Zones",
+                "Volume per Hour",
+                "Volume Ratio"
+            )
+        )
         
-        fig.add_trace(go.Scatter(x=df_chart["Time"], y=df_chart["Close"],
-                                 line=dict(color="#00a2ff", width=2), name="Price"), row=1, col=1)
+        # Row 1: Price + Liquidity Zones
+        fig.add_trace(go.Candlestick(
+            x=df_chart["Time"],
+            open=df_chart["Open"],
+            high=df_chart["High"],
+            low=df_chart["Low"],
+            close=df_chart["Close"],
+            name="Price",
+            increasing_line_color="#00ff88",
+            decreasing_line_color="#ff3b5c"
+        ), row=1, col=1)
         
+        # Tambahkan zona likuiditas ke chart
+        fig = add_liquidity_zones_to_fig(fig, df_chart, buy_zones, sell_zones)
+        
+        # Row 2: Volume
         avg_volume = d["avg_volume"]
         colors = ["#00ff88" if v > avg_volume * 2 else "#ff3b5c" if v < avg_volume * 0.5 else "#ffaa00" 
                   for v in df_chart["Volume"]]
         
-        fig.add_trace(go.Bar(x=df_chart["Time"], y=df_chart["Volume"], marker_color=colors, name="Volume"), row=2, col=1)
-        fig.add_hline(y=avg_volume, line_dash="dash", line_color="#ffaa00", 
-                      annotation_text="Avg Volume", row=2, col=1)
+        fig.add_trace(go.Bar(
+            x=df_chart["Time"], 
+            y=df_chart["Volume"], 
+            marker_color=colors, 
+            name="Volume"
+        ), row=2, col=1)
+        fig.add_hline(
+            y=avg_volume, 
+            line_dash="dash", 
+            line_color="#ffaa00", 
+            annotation_text="Avg Volume", 
+            row=2, col=1
+        )
         
-        fig.update_layout(template="plotly_dark", height=600, showlegend=False,
-                          plot_bgcolor="#0a0a1a", paper_bgcolor="#0a0a1a")
+        # Row 3: Volume Ratio
+        volume_ratio = df_chart["Volume"] / avg_volume
+        ratio_colors = ["#00ff88" if r > 2 else "#ff3b5c" if r < 0.5 else "#ffaa00" for r in volume_ratio]
+        
+        fig.add_trace(go.Bar(
+            x=df_chart["Time"],
+            y=volume_ratio,
+            marker_color=ratio_colors,
+            name="Volume Ratio"
+        ), row=3, col=1)
+        fig.add_hline(y=2, line_dash="dash", line_color="#00ff88", annotation_text="High (2x)", row=3, col=1)
+        fig.add_hline(y=0.5, line_dash="dash", line_color="#ff3b5c", annotation_text="Low (0.5x)", row=3, col=1)
+        
+        # Layout
+        fig.update_layout(
+            template="plotly_dark",
+            height=800,
+            showlegend=False,
+            plot_bgcolor="#0a0a1a",
+            paper_bgcolor="#0a0a1a",
+            font=dict(color="#94a3b8")
+        )
         fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
         fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
         
         st.plotly_chart(fig, use_container_width=True)
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Statistik
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Last Volume", format_volume(d["last_volume"]))
         col2.metric("Avg 24h", format_volume(d["avg_volume"]))
         col3.metric("Max 24h", format_volume(d["max_volume"]))
         col4.metric("Ratio", f"{d['volume_ratio']:.2f}x")
-
+        col5.metric("Price", f"${d['last_price']:.2f}")
+        
+        # Tampilkan zona dalam tabel
+        if buy_zones or sell_zones:
+            with st.expander("📋 Detail Liquidity Zones"):
+                if buy_zones:
+                    st.write("🟢 **Buyside Liquidity Zones**")
+                    df_buy = pd.DataFrame(buy_zones)
+                    st.dataframe(df_buy[['price', 'high', 'low']], use_container_width=True)
+                
+                if sell_zones:
+                    st.write("🔴 **Sellside Liquidity Zones**")
+                    df_sell = pd.DataFrame(sell_zones)
+                    st.dataframe(df_sell[['price', 'high', 'low']], use_container_width=True)
+    else:
+        st.warning("Data tidak tersedia")
+else:
+    st.warning(f"Data untuk {selected_coin} tidak ditemukan")
 # =========================================================
 # ALERT HISTORY
 # =========================================================
