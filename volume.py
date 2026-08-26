@@ -131,7 +131,6 @@ def remove_coin(symbol):
 def save_volume_alert(data):
     supabase = get_supabase()
     try:
-        # Cek duplikat 5 menit
         five_min_ago = (datetime.now() - timedelta(minutes=5)).isoformat()
         check = supabase.table("volume_alerts")\
             .select("id")\
@@ -190,12 +189,20 @@ if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now()
 if "volume_alerts_sent" not in st.session_state:
     st.session_state.volume_alerts_sent = {}
+if "liquidity_length" not in st.session_state:
+    st.session_state.liquidity_length = 5
+if "liquidity_margin" not in st.session_state:
+    st.session_state.liquidity_margin = 1.5
+if "min_pivot_group" not in st.session_state:
+    st.session_state.min_pivot_group = 2
+if "use_alternative" not in st.session_state:
+    st.session_state.use_alternative = False
 
 # =========================================================
 # HEADER
 # =========================================================
 st.title("📊 Volume Monitor - Crypto")
-st.caption("Monitoring volume per jam | Deteksi lonjakan volume | Supabase + Telegram")
+st.caption("Monitoring volume per jam | Deteksi lonjakan volume | Supabase + Telegram | Liquidity Zones")
 col_time, _ = st.columns([2, 3])
 with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -241,6 +248,34 @@ with st.sidebar:
     refresh = st.slider("🔄 Refresh (detik)", 10, 120, 30)
     volume_threshold = st.slider("🚨 Alert Threshold (x avg)", 1.5, 5.0, 2.5, 0.5)
     lookback_hours = st.slider("📊 Lookback (jam)", 12, 72, 24)
+    
+    st.divider()
+    
+    st.subheader("🎯 Liquidity Settings")
+    st.session_state.liquidity_length = st.slider(
+        "Pivot Length", 
+        3, 10, 
+        st.session_state.liquidity_length,
+        key="liquidity_length_slider"
+    )
+    st.session_state.liquidity_margin = st.slider(
+        "Zone Margin", 
+        1.0, 3.0, 
+        st.session_state.liquidity_margin, 
+        0.1,
+        key="liquidity_margin_slider"
+    )
+    st.session_state.min_pivot_group = st.slider(
+        "Min Pivot Group", 
+        2, 5, 
+        st.session_state.min_pivot_group,
+        key="min_pivot_group_slider"
+    )
+    st.session_state.use_alternative = st.checkbox(
+        "Use Alternative Data", 
+        value=st.session_state.use_alternative,
+        key="use_alternative_checkbox"
+    )
     
     st.divider()
     
@@ -358,12 +393,10 @@ def format_volume(value):
         return f"{value:.0f}"
 
 # =========================================================
-# LIQUIDITY ZONES DETECTION - VERSI IMPROVED
+# LIQUIDITY ZONES DETECTION
 # =========================================================
-def find_pivots_improved(df, length=5, lookback=3):
-    """
-    Mencari pivot high/low dengan lebih akurat
-    """
+def find_pivots_improved(df, length=5):
+    """Mencari pivot high/low dengan lebih akurat"""
     highs = df['High']
     lows = df['Low']
     
@@ -372,9 +405,7 @@ def find_pivots_improved(df, length=5, lookback=3):
     pivot_low_idx = []
     pivot_low_val = []
     
-    # Cari pivot dengan window yang lebih kecil
     for i in range(length, len(df) - length):
-        # Pivot High: harga tertinggi di antara window kiri dan kanan
         left_high = max(highs.iloc[i-length:i])
         right_high = max(highs.iloc[i+1:i+length+1])
         
@@ -382,7 +413,6 @@ def find_pivots_improved(df, length=5, lookback=3):
             pivot_high_idx.append(i)
             pivot_high_val.append(highs.iloc[i])
         
-        # Pivot Low: harga terendah di antara window kiri dan kanan
         left_low = min(lows.iloc[i-length:i])
         right_low = min(lows.iloc[i+1:i+length+1])
         
@@ -393,15 +423,12 @@ def find_pivots_improved(df, length=5, lookback=3):
     return pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val
 
 def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
-    """
-    Deteksi zona likuiditas - versi lebih sensitif
-    """
+    """Deteksi zona likuiditas - versi lebih sensitif"""
     if df is None or len(df) < 30:
         return [], []
     
     pivot_high_idx, pivot_high_val, pivot_low_idx, pivot_low_val = find_pivots_improved(df, length)
     
-    # Hitung ATR (Average True Range)
     high_low = df['High'] - df['Low']
     high_close = abs(df['High'] - df['Close'].shift())
     low_close = abs(df['Low'] - df['Close'].shift())
@@ -415,14 +442,12 @@ def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
     buy_zones = []
     sell_zones = []
     
-    # Kelompokkan pivot high yang berdekatan (Buyside)
     i = 0
     while i < len(pivot_high_idx):
         group_idx = [pivot_high_idx[i]]
         group_val = [pivot_high_val[i]]
         j = i + 1
         while j < len(pivot_high_idx):
-            # Jika jarak harga < margin * ATR, kelompokkan
             if abs(pivot_high_val[j] - pivot_high_val[i]) < atr * margin:
                 group_idx.append(pivot_high_idx[j])
                 group_val.append(pivot_high_val[j])
@@ -430,7 +455,6 @@ def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
             else:
                 break
         
-        # Minimal 2 pivot untuk membentuk zona
         if len(group_idx) >= min_group:
             avg_price = sum(group_val) / len(group_val)
             buy_zones.append({
@@ -442,7 +466,6 @@ def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
             })
         i = j if j > i else i + 1
     
-    # Kelompokkan pivot low yang berdekatan (Sellside)
     i = 0
     while i < len(pivot_low_idx):
         group_idx = [pivot_low_idx[i]]
@@ -468,6 +491,97 @@ def detect_liquidity_zones_improved(df, length=5, margin=1.5, min_group=2):
         i = j if j > i else i + 1
     
     return buy_zones, sell_zones
+
+def get_dummy_liquidity_zones(df):
+    """Buat zona likuiditas dummy untuk testing"""
+    if df is None or len(df) < 30:
+        return [], []
+    
+    last_price = df['Close'].iloc[-1]
+    
+    buy_zones = [
+        {'start_idx': 0, 'end_idx': len(df)-1, 'price': last_price * 0.92, 'high': last_price * 0.94, 'low': last_price * 0.90},
+        {'start_idx': 0, 'end_idx': len(df)-1, 'price': last_price * 0.88, 'high': last_price * 0.90, 'low': last_price * 0.86},
+    ]
+    
+    sell_zones = [
+        {'start_idx': 0, 'end_idx': len(df)-1, 'price': last_price * 1.08, 'high': last_price * 1.10, 'low': last_price * 1.06},
+        {'start_idx': 0, 'end_idx': len(df)-1, 'price': last_price * 1.12, 'high': last_price * 1.14, 'low': last_price * 1.10},
+    ]
+    
+    return buy_zones, sell_zones
+
+def add_liquidity_zones_to_fig(fig, df, buy_zones, sell_zones):
+    """Tambahkan zona likuiditas ke chart yang sudah ada"""
+    for zone in buy_zones:
+        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
+            fig.add_hrect(
+                y0=zone['low'],
+                y1=zone['high'],
+                fillcolor='rgba(0,255,136,0.15)',
+                line=dict(color='rgba(0,255,136,0.6)', width=1, dash='dash'),
+                annotation_text=f"🟢 Buyside {zone['price']:,.0f}",
+                annotation_position="bottom left",
+                annotation_font=dict(color='#00ff88', size=10)
+            )
+            fig.add_hline(
+                y=zone['price'],
+                line=dict(color='rgba(0,255,136,0.3)', width=1, dash='dot')
+            )
+    
+    for zone in sell_zones:
+        if zone['start_idx'] < len(df) and zone['end_idx'] < len(df):
+            fig.add_hrect(
+                y0=zone['low'],
+                y1=zone['high'],
+                fillcolor='rgba(255,59,92,0.15)',
+                line=dict(color='rgba(255,59,92,0.6)', width=1, dash='dash'),
+                annotation_text=f"🔴 Sellside {zone['price']:,.0f}",
+                annotation_position="top left",
+                annotation_font=dict(color='#ff3b5c', size=10)
+            )
+            fig.add_hline(
+                y=zone['price'],
+                line=dict(color='rgba(255,59,92,0.3)', width=1, dash='dot')
+            )
+    
+    return fig
+
+@st.cache_data(ttl=60, show_spinner=False)
+def get_crypto_data_alternative(symbol, interval="1h", limit=100):
+    """Ambil data dari CoinGecko sebagai alternatif"""
+    try:
+        interval_map = {
+            "1m": "1m", "5m": "5m", "15m": "15m",
+            "30m": "30m", "1h": "1h", "4h": "4h",
+            "1d": "1d"
+        }
+        gecko_interval = interval_map.get(interval, "1h")
+        
+        url = f"https://api.coingecko.com/api/v3/coins/{symbol.lower()}/market_chart"
+        params = {
+            "vs_currency": "usd",
+            "days": "7",
+            "interval": gecko_interval
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('prices') and len(data['prices']) > 20:
+                df = pd.DataFrame(data['prices'], columns=['Time', 'Close'])
+                df['Time'] = pd.to_datetime(df['Time'], unit='ms')
+                df['Open'] = df['Close'].shift(1)
+                df['Open'].fillna(df['Close'], inplace=True)
+                df['High'] = df['Close'] * 1.002
+                df['Low'] = df['Close'] * 0.998
+                df['Volume'] = 1000000
+                return df
+        return None
+    except Exception as e:
+        print(f"Alternative data error: {e}")
+        return None
 
 # =========================================================
 # MAIN
@@ -598,7 +712,7 @@ for idx, (symbol, d) in enumerate(data.items()):
 st.dataframe(df_table, use_container_width=True, hide_index=True)
 
 # =========================================================
-# CHART DENGAN LIQUIDITY ZONES - VERSI IMPROVED
+# CHART DENGAN LIQUIDITY ZONES
 # =========================================================
 st.divider()
 st.subheader("📈 Volume Chart with Liquidity Zones")
@@ -609,14 +723,17 @@ if selected_coin in data:
     d = data[selected_coin]
     df = d["df"]
     
-    # Opsi: gunakan data alternatif
+    use_alternative = st.session_state.use_alternative
+    liquidity_length = st.session_state.liquidity_length
+    liquidity_margin = st.session_state.liquidity_margin
+    min_pivot_group = st.session_state.min_pivot_group
+    
     if use_alternative:
         df_alt = get_crypto_data_alternative(selected_coin, interval="1h", limit=100)
         if df_alt is not None:
             df = df_alt
     
     if df is not None and not df.empty:
-        # Deteksi zona likuiditas dengan parameter yang bisa diatur
         with st.spinner("🔍 Mendeteksi Liquidity Zones..."):
             buy_zones, sell_zones = detect_liquidity_zones_improved(
                 df, 
@@ -625,17 +742,14 @@ if selected_coin in data:
                 min_group=min_pivot_group
             )
             
-            # Jika masih kosong, gunakan dummy
             if not buy_zones and not sell_zones:
                 st.info("ℹ️ Tidak ada zona terdeteksi, menggunakan zona estimasi")
                 buy_zones, sell_zones = get_dummy_liquidity_zones(df)
         
-        # Tampilkan jumlah zona
         col1, col2 = st.columns(2)
         col1.metric("🟢 Buyside Zones", len(buy_zones))
         col2.metric("🔴 Sellside Zones", len(sell_zones))
         
-        # Buat chart
         df_chart = df.tail(168)
         
         fig = make_subplots(
@@ -662,7 +776,6 @@ if selected_coin in data:
             decreasing_line_color="#ff3b5c"
         ), row=1, col=1)
         
-        # Tambahkan zona likuiditas ke chart
         fig = add_liquidity_zones_to_fig(fig, df_chart, buy_zones, sell_zones)
         
         # Row 2: Volume
@@ -697,7 +810,6 @@ if selected_coin in data:
         fig.add_hline(y=2, line_dash="dash", line_color="#00ff88", annotation_text="High (2x)", row=3, col=1)
         fig.add_hline(y=0.5, line_dash="dash", line_color="#ff3b5c", annotation_text="Low (0.5x)", row=3, col=1)
         
-        # Layout
         fig.update_layout(
             template="plotly_dark",
             height=800,
@@ -711,7 +823,6 @@ if selected_coin in data:
         
         st.plotly_chart(fig, use_container_width=True)
         
-        # Statistik
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Last Volume", format_volume(d["last_volume"]))
         col2.metric("Avg 24h", format_volume(d["avg_volume"]))
@@ -719,7 +830,6 @@ if selected_coin in data:
         col4.metric("Ratio", f"{d['volume_ratio']:.2f}x")
         col5.metric("Price", f"${d['last_price']:.2f}")
         
-        # Tampilkan zona dalam tabel
         if buy_zones or sell_zones:
             with st.expander("📋 Detail Liquidity Zones"):
                 if buy_zones:
@@ -741,6 +851,7 @@ if selected_coin in data:
         st.warning("Data tidak tersedia")
 else:
     st.warning(f"Data untuk {selected_coin} tidak ditemukan")
+
 # =========================================================
 # ALERT HISTORY
 # =========================================================
