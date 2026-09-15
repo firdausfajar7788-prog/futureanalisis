@@ -1177,6 +1177,145 @@ def backtest_trade_plan(df, symbol, lookback=20, horizon=20, min_conf=2):
     return bt, stats
 
 # =========================================================
+# RENDER TRADE PLAN (komponen visual)
+# =========================================================
+def render_trade_plan(plan, df, symbol, timeframe, account_balance, risk_pct):
+    """Render trade plan card dengan semua info."""
+
+    # Header
+    st.markdown(f"""
+    <div class="plan-card">
+        <div class="plan-header">🎯 AUTO TRADE PLAN — {symbol} · {timeframe}</div>
+        <div style="color:#64748b;font-size:13px;margin-bottom:12px;">
+            Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+        </div>
+        <span class="setup-badge {plan['setup_class']}">{plan['setup_label']}</span>
+        <span class="plan-confidence" style="margin-left:10px;">
+            {'⭐' * plan['confidence']} ({plan['confidence']}/5)
+        </span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Setup WAIT — tampilkan pesan saja
+    if plan["setup_type"] == "WAIT":
+        st.warning("⏳ Tidak ada setup entry saat ini. " + " | ".join(plan["reasons"]))
+        if plan.get("dip_level"):
+            st.info(f"💡 Tunggu pullback ke **${plan['dip_level']:.6f}** "
+                    f"atau breakout di atas **${plan.get('breakout_level') or 0:.6f}**")
+        return
+
+    # Level boxes
+    entry = plan["entry"]; sl = plan["stop_loss"]
+    tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
+
+    def pct(a, b): return (a / b - 1) * 100
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">📈 Entry</div>
+            <div class="level-value">${entry:.6f}</div>
+            <div class="level-pct">Limit / Market</div>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">🛑 Stop Loss</div>
+            <div class="level-value">${sl:.6f}</div>
+            <div class="level-pct neg">{pct(sl, entry):+.2f}%</div>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">🎯 TP1</div>
+            <div class="level-value">${tp1:.6f}</div>
+            <div class="level-pct pos">{pct(tp1, entry):+.2f}%</div>
+        </div>""", unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">🎯 TP2</div>
+            <div class="level-value">${tp2:.6f}</div>
+            <div class="level-pct pos">{pct(tp2, entry):+.2f}%</div>
+        </div>""", unsafe_allow_html=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">🎯 TP3</div>
+            <div class="level-value">${tp3:.6f}</div>
+            <div class="level-pct pos">{pct(tp3, entry):+.2f}%</div>
+        </div>""", unsafe_allow_html=True)
+    with c2:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">📊 Risk/Reward</div>
+            <div class="level-value">1 : {plan['rr']:.2f}</div>
+            <div class="level-pct">{'✅ GOOD' if plan['rr'] >= 2 else '⚠️ LOW' if plan['rr'] >= 1.5 else '❌ BAD'}</div>
+        </div>""", unsafe_allow_html=True)
+    with c3:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">💰 Position Size</div>
+            <div class="level-value">${plan['position_usd']:.2f}</div>
+            <div class="level-pct">{plan['units']:.4f} unit</div>
+        </div>""", unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"""
+        <div class="level-box">
+            <div class="level-label">💵 Max Loss</div>
+            <div class="level-value">${plan['max_loss_usd']:.2f}</div>
+            <div class="level-pct neg">{plan['risk_pct']:.1f}% modal</div>
+        </div>""", unsafe_allow_html=True)
+
+    # Alasan + Invalidasi
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("##### 🧠 Alasan (Why this setup)")
+        for r in plan["reasons"]:
+            st.markdown(f"<div class='reason-item'>{r}</div>", unsafe_allow_html=True)
+
+    with col_b:
+        st.markdown("##### ⚠️ Invalidasi (Batal jika)")
+        for i in plan["invalidations"]:
+            st.markdown(f"<div class='reason-item'>{i}</div>", unsafe_allow_html=True)
+
+    # Alternatif
+    if plan.get("alternatives"):
+        st.markdown("##### 📋 Skenario Alternatif")
+        for alt in plan["alternatives"]:
+            with st.expander(f"{alt['name']} — R:R 1:{alt['rr']:.2f}"):
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Entry", f"${alt['entry']:.6f}")
+                c2.metric("SL", f"${alt['sl']:.6f}")
+                c3.metric("TP", f"${alt['tp']:.6f}")
+                st.caption(alt["note"])
+
+    # Action buttons
+    st.markdown("---")
+    b1, b2, b3 = st.columns(3)
+    with b1:
+        if st.button("📱 Kirim Plan ke Telegram", use_container_width=True, key="btn_tg_plan"):
+            msg = format_plan_for_telegram(plan)
+            if send_telegram_plan(msg):
+                st.success("✅ Plan terkirim ke Telegram!")
+            else:
+                st.error("❌ Gagal kirim. Cek token/chat ID.")
+    with b2:
+        if st.button("💾 Simpan ke Database", use_container_width=True, key="btn_save_plan"):
+            if save_trade_plan(plan):
+                st.success("✅ Plan tersimpan!")
+            else:
+                st.error("❌ Gagal simpan. Pastikan tabel 'trade_plans' sudah dibuat.")
+    with b3:
+        plan_txt = format_plan_for_telegram(plan).replace("<b>", "").replace("</b>", "")
+        st.download_button("📋 Download Plan (TXT)", plan_txt,
+                           file_name=f"plan_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                           mime="text/plain", use_container_width=True)
+
+# =========================================================
 # INITIALIZATION
 # =========================================================
 if "watchlist" not in st.session_state:
