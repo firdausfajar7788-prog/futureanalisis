@@ -10,8 +10,6 @@ import warnings
 import os
 import json
 import html
-
- 
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client, Client
@@ -961,7 +959,7 @@ def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
 def format_plan_for_telegram(plan):
     """Format Auto Trade Plan untuk Telegram — versi aman (escape HTML)."""
     def esc(s):
-        return html.escape(str(s))
+        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     entry = plan["entry"]
     sl = plan["stop_loss"]
