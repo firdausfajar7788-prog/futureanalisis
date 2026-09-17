@@ -227,46 +227,56 @@ if "last_telegram_time" not in st.session_state:
     st.session_state.last_telegram_time = {}
 
 def send_telegram_once(symbol, signal, result):
-    """Kirim notifikasi signal scanner ke Telegram (versi detail)."""
+    """Kirim notifikasi signal ke Telegram — dengan debug log."""
     now = datetime.now()
+    debug = st.session_state.get("_tg_debug_log", [])
+    debug.append(f"[{now.strftime('%H:%M:%S')}] === {symbol} ===")
 
-    # Cooldown 10 menit per coin
+    # Cooldown
     last_time = st.session_state.last_telegram_time.get(symbol)
     if last_time is not None:
         diff = (now - last_time).seconds / 60
+        debug.append(f"⏱️ Last sent {diff:.1f}m ago")
         if diff < 10:
+            debug.append(f"❌ SKIP: cooldown")
+            st.session_state["_tg_debug_log"] = debug[-50:]
             return False
+    else:
+        debug.append("⏱️ Never sent — OK")
 
     signal_key = f"{symbol}_{signal}_{now.strftime('%Y%m%d_%H%M')}"
     if signal_key in st.session_state.sent_signals:
+        debug.append(f"❌ SKIP: duplicate key")
+        st.session_state["_tg_debug_log"] = debug[-50:]
         return False
 
     try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
+        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "").strip()
+
         if not bot_token or not chat_id:
+            debug.append(f"❌ SKIP: token/chat empty")
+            st.session_state["_tg_debug_log"] = debug[-50:]
             return False
 
-        # Kalau result adalah string, kirim simple
-        if isinstance(result, str):
-            msg = f"⚡ <b>SIGNAL ALERT</b>\n\n"
-            msg += f"<b>{symbol}</b>\n"
-            msg += f"{signal}\n"
-            msg += f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}"
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            r = requests.post(url, json={
-                "chat_id": chat_id,
-                "text": msg,
-                "parse_mode": "HTML"
-            }, timeout=10)
-            if r.status_code == 200:
-                st.session_state.sent_signals[signal_key] = True
-                st.session_state.last_telegram_time[symbol] = now
-                return True
+        # Format message
+        if isinstance(result, dict):
+            try:
+                msg = format_plan_for_telegram(result)
+                debug.append(f"📝 Msg: {len(msg)} chars")
+            except Exception as e:
+                debug.append(f"❌ Format error: {e}")
+                st.session_state["_tg_debug_log"] = debug[-50:]
+                return False
+        else:
+            msg = f"⚡ <b>SIGNAL</b>\n\n<b>{symbol}</b>\n{signal}"
+            debug.append(f"📝 Simple msg: {len(msg)} chars")
+
+        if len(msg) > 4000:
+            debug.append(f"❌ SKIP: too long ({len(msg)})")
+            st.session_state["_tg_debug_log"] = debug[-50:]
             return False
 
-        # Kalau result adalah dict (plan), kirim detail
-        msg = format_plan_for_telegram(result)
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         r = requests.post(url, json={
             "chat_id": chat_id,
@@ -275,32 +285,63 @@ def send_telegram_once(symbol, signal, result):
             "disable_web_page_preview": True
         }, timeout=10)
 
+        debug.append(f"📥 HTTP {r.status_code}")
+
         if r.status_code == 200:
             st.session_state.sent_signals[signal_key] = True
             st.session_state.last_telegram_time[symbol] = now
+            debug.append(f"✅ SENT OK")
+            st.session_state["_tg_debug_log"] = debug[-50:]
             return True
+        else:
+            try:
+                err = r.json()
+                debug.append(f"❌ Telegram: {err.get('description', 'unknown')}")
+            except:
+                debug.append(f"❌ Body: {r.text[:200]}")
+            st.session_state["_tg_debug_log"] = debug[-50:]
+            return False
 
     except Exception as e:
-        print(f"Telegram error: {e}")
+        debug.append(f"❌ Exception: {str(e)}")
+        st.session_state["_tg_debug_log"] = debug[-50:]
     return False
 
 def send_telegram_plan(plan_text):
-    """Kirim pesan HTML ke Telegram (untuk plan card / test)."""
+    """Kirim pesan HTML ke Telegram — dengan error detail."""
     try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        if bot_token and chat_id:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            r = requests.post(url, json={
-                "chat_id": chat_id,
-                "text": plan_text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            }, timeout=10)
-            return r.status_code == 200
-    except:
-        pass
-    return False
+        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "").strip()
+        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "").strip()
+
+        if not bot_token or not chat_id:
+            st.error(f"❌ Token/chat kosong")
+            return False
+
+        if len(plan_text) > 4096:
+            plan_text = plan_text[:4000] + "\n[...dipotong...]"
+
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        r = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": plan_text,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=10)
+
+        if r.status_code == 200:
+            return True
+        else:
+            try:
+                err = r.json()
+                desc = err.get("description", "unknown")
+                st.error(f"❌ Telegram: {desc}")
+            except:
+                st.error(f"❌ HTTP {r.status_code}: {r.text[:200]}")
+            return False
+
+    except Exception as e:
+        st.error(f"❌ Exception: {str(e)}")
+        return False
 
 def send_telegram_test(message):
     """Kirim test message ke Telegram."""
