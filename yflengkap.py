@@ -915,7 +915,10 @@ def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
 # FORMAT PLAN TELEGRAM — VERSI DETAIL
 # =========================================================
 def format_plan_for_telegram(plan):
-    """Format Auto Trade Plan untuk Telegram — versi detail."""
+    """Format Auto Trade Plan untuk Telegram — versi aman (escape HTML)."""
+    def esc(s):
+        return html.escape(str(s))
+
     entry = plan["entry"]
     sl = plan["stop_loss"]
     tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
@@ -928,11 +931,10 @@ def format_plan_for_telegram(plan):
 
     txt = f"🎯 <b>AUTO TRADE PLAN</b>\n"
     txt += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-    txt += f"<b>{plan['symbol']}</b> · {plan['timeframe']}\n"
-    txt += f"{plan['setup_label']}\n"
+    txt += f"<b>{esc(plan['symbol'])}</b> · {esc(plan['timeframe'])}\n"
+    txt += f"{esc(plan['setup_label'])}\n"
     txt += f"Confidence: {'⭐' * plan['confidence']} ({plan['confidence']}/5)\n\n"
 
-    # Setup Detail
     if setup_type == "BUY_THE_DIP":
         fib = plan.get("fib", {})
         fib_618 = fib.get(0.618, 0)
@@ -946,7 +948,7 @@ def format_plan_for_telegram(plan):
         txt += f"Swing Low:  ${swing_low:.6f}\n"
         txt += f"Fib 0.5:    ${fib_5:.6f}\n"
         txt += f"Fib 0.618:  ${fib_618:.6f}\n"
-        txt += f"→ Entry di Fib {dip_lvl}: <b>${entry:.6f}</b>\n\n"
+        txt += f"→ Entry di Fib {esc(dip_lvl)}: <b>${entry:.6f}</b>\n\n"
 
     elif setup_type == "LIQUIDITY_GRAB":
         ssl = plan.get("liq_level", 0)
@@ -960,46 +962,45 @@ def format_plan_for_telegram(plan):
         txt += f"Resistance: <b>${res:.6f}</b>\n"
         txt += f"→ Harga tembus resistance\n\n"
 
-    # Level Trading
     txt += f"📊 <b>LEVEL TRADING</b>\n"
     txt += f"🎯 Entry: <b>${entry:.6f}</b>\n"
     txt += f"🛑 SL:    <b>${sl:.6f}</b> ({sl_pct:+.2f}%)\n"
-    txt += f"🥇 TP1:   <b>${tp1:.6f}</b> ({tp1_pct:+.2f}%) — jual 50%\n"
-    txt += f"🥈 TP2:   <b>${tp2:.6f}</b> ({tp2_pct:+.2f}%) — jual 30%\n"
-    txt += f"🥉 TP3:   <b>${tp3:.6f}</b> ({tp3_pct:+.2f}%) — trailing 20%\n"
+    txt += f"🥇 TP1:   <b>${tp1:.6f}</b> ({tp1_pct:+.2f}%)\n"
+    txt += f"🥈 TP2:   <b>${tp2:.6f}</b> ({tp2_pct:+.2f}%)\n"
+    txt += f"🥉 TP3:   <b>${tp3:.6f}</b> ({tp3_pct:+.2f}%)\n"
     txt += f"📊 R:R:   1 : {plan['rr']:.2f}\n\n"
 
-    # Position Sizing
     txt += f"💰 <b>POSITION SIZING</b>\n"
     txt += f"Modal: ${plan['account_balance']:.2f}\n"
     txt += f"Risk: {plan['risk_pct']:.1f}% = ${plan['max_loss_usd']:.2f}\n"
     txt += f"Position: <b>${plan['position_usd']:.2f}</b>\n"
-    txt += f"Units: <b>{plan['units']:.6f}</b>\n"
-    txt += f"Target profit (TP2): ${plan['profit_tp2_usd']:.2f}\n\n"
+    txt += f"Units: <b>{plan['units']:.6f}</b>\n\n"
 
-    # Alasan
     txt += f"🧠 <b>ALASAN:</b>\n"
     for r in plan['reasons'][:6]:
-        txt += f"{r}\n"
+        txt += f"{esc(r)}\n"
     txt += "\n"
 
-    # Invalidasi
     txt += f"⚠️ <b>INVALIDASI:</b>\n"
     for i in plan['invalidations'][:3]:
-        txt += f"{i}\n"
+        txt += f"{esc(i)}\n"
     txt += "\n"
 
-    # Alternatif
     if plan.get("alternatives"):
         txt += f"📋 <b>SKENARIO ALTERNATIF:</b>\n"
         for alt in plan['alternatives'][:2]:
-            txt += f"• {alt['name']}\n"
+            txt += f"• {esc(alt['name'])}\n"
             txt += f"  Entry: ${alt['entry']:.6f}\n"
             txt += f"  SL: ${alt['sl']:.6f} · TP: ${alt['tp']:.6f}\n"
             txt += f"  R:R 1:{alt['rr']:.2f}\n"
         txt += "\n"
 
     txt += f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+    # Potong kalau terlalu panjang
+    if len(txt) > 4000:
+        txt = txt[:3900] + "\n\n[...dipotong...]"
+
     return txt
 
 # =========================================================
