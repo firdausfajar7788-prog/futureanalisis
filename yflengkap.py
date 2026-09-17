@@ -11,11 +11,7 @@ import os
 import json
 import html
 
-def escape_tg(text):
-    """Escape karakter berbahaya untuk Telegram HTML parse_mode."""
-    if text is None:
-        return ""
-    return html.escape(str(text))
+ 
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
 from supabase import create_client, Client
