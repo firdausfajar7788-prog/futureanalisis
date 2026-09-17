@@ -220,49 +220,93 @@ if "last_telegram_time" not in st.session_state:
     st.session_state.last_telegram_time = {}
 
 def send_telegram_once(symbol, signal, result):
+    """Kirim notifikasi signal scanner ke Telegram (versi detail)."""
     now = datetime.now()
+
+    # Cooldown 10 menit per coin
     last_time = st.session_state.last_telegram_time.get(symbol)
     if last_time is not None:
         diff = (now - last_time).seconds / 60
         if diff < 10:
             return False
+
     signal_key = f"{symbol}_{signal}_{now.strftime('%Y%m%d_%H%M')}"
     if signal_key in st.session_state.sent_signals:
         return False
+
     try:
         bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        if bot_token and chat_id:
-            msg = f"⚡ SIGNAL ALERT!\n\nCoin: {symbol}\nSignal: {signal}\nTime: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        if not bot_token or not chat_id:
+            return False
+
+        # Kalau result adalah string, kirim simple
+        if isinstance(result, str):
+            msg = f"⚡ <b>SIGNAL ALERT</b>\n\n"
+            msg += f"<b>{symbol}</b>\n"
+            msg += f"{signal}\n"
+            msg += f"🕐 {now.strftime('%Y-%m-%d %H:%M:%S')}"
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            response = requests.post(url, json={"chat_id": chat_id, "text": msg}, timeout=10)
-            if response.status_code == 200:
+            r = requests.post(url, json={
+                "chat_id": chat_id,
+                "text": msg,
+                "parse_mode": "HTML"
+            }, timeout=10)
+            if r.status_code == 200:
                 st.session_state.sent_signals[signal_key] = True
                 st.session_state.last_telegram_time[symbol] = now
                 return True
+            return False
+
+        # Kalau result adalah dict (plan), kirim detail
+        msg = format_plan_for_telegram(result)
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        r = requests.post(url, json={
+            "chat_id": chat_id,
+            "text": msg,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=10)
+
+        if r.status_code == 200:
+            st.session_state.sent_signals[signal_key] = True
+            st.session_state.last_telegram_time[symbol] = now
+            return True
+
     except Exception as e:
         print(f"Telegram error: {e}")
     return False
 
 def send_telegram_plan(plan_text):
+    """Kirim pesan HTML ke Telegram (untuk plan card / test)."""
     try:
         bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
         if bot_token and chat_id:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            r = requests.post(url, json={"chat_id": chat_id, "text": plan_text, "parse_mode": "HTML"}, timeout=10)
+            r = requests.post(url, json={
+                "chat_id": chat_id,
+                "text": plan_text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            }, timeout=10)
             return r.status_code == 200
     except:
         pass
     return False
 
 def send_telegram_test(message):
+    """Kirim test message ke Telegram."""
     try:
         bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
         chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
         if bot_token and chat_id:
             url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=10)
+            requests.post(url, json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }, timeout=10)
             return True
     except:
         pass
@@ -281,7 +325,7 @@ def format_price(value):
     else: return f"$ {value:,.8f}"
 
 # =========================================================
-# GET DATA (YAHOO FINANCE) — tanpa fallback berbahaya
+# GET DATA
 # =========================================================
 @st.cache_data(ttl=30, show_spinner=False)
 def get_data(symbol, interval, period):
@@ -295,7 +339,6 @@ def get_data(symbol, interval, period):
         df = df.reset_index()
         df.rename(columns={df.columns[0]: "Time"}, inplace=True)
         df["Time"] = pd.to_datetime(df["Time"])
-        # Validasi: harga harus positif
         if df["Close"].iloc[-1] <= 0:
             return None
         return df
@@ -425,8 +468,7 @@ def analyze_macd_stoch(df, timeframe=""):
         return None
     macd_line, signal_line, histogram = MACD(df)
     stoch_k, stoch_d, rsi = StochasticRSI(df)
-    ema20 = EMA(df, 20)
-    ema50 = EMA(df, 50)
+    ema20 = EMA(df, 20); ema50 = EMA(df, 50)
 
     last = df.iloc[-1]
     price = float(last["Close"])
@@ -535,13 +577,9 @@ def analyze_macd_stoch(df, timeframe=""):
     }
 
 # =========================================================
-# AUTO TRADE PLAN — DENGAN SEMUA VALIDASI
+# AUTO TRADE PLAN
 # =========================================================
 def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=2.0):
-    """
-    Generate Entry/SL/TP/RR + validasi ketat.
-    Return dict atau None.
-    """
     if df is None or len(df) < 50:
         return None
 
@@ -567,11 +605,9 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
     nearest_support = supports[0] if supports else None
     nearest_resistance = resistances[0] if resistances else None
 
-    # Analysis dulu
     analysis = analyze_macd_stoch(df, timeframe)
     vol_ratio = analysis["volume_ratio"] if analysis else 1.0
 
-    # ---------- Helper reject ----------
     def make_wait(reason_text):
         return {
             "symbol": symbol, "timeframe": timeframe,
@@ -590,16 +626,14 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
             "signal_type": "WAIT", "signal_strength": 0
         }
 
-    # ---------- Reject kalau volume rendah ----------
     if vol_ratio < 0.5:
         return make_wait(f"WAIT — Volume terlalu rendah ({vol_ratio:.2f}x)")
 
-    # ---------- Deteksi Setup ----------
     setup_type = "WAIT"; setup_label = "⏳ WAIT (no clear setup)"; setup_class = "setup-wait"
     entry = sl = tp1 = tp2 = tp3 = None
     reasons = []
     invalidations = []
-    is_sell_setup = False
+    dip_fib_level = None
 
     near = lambda a, b, pct=1.5: a is not None and b is not None and abs(a - b) / b * 100 < pct
 
@@ -607,8 +641,10 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
     dip_level = None
     if fib_618 and abs(price - fib_618) / fib_618 * 100 < 5:
         dip_level = fib_618
+        dip_fib_level = "0.618"
     elif fib_5 and abs(price - fib_5) / fib_5 * 100 < 3:
         dip_level = fib_5
+        dip_fib_level = "0.500"
 
     # Setup B: BREAKOUT
     breakout_level = None
@@ -622,27 +658,28 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
     if nearest_ssl and abs(price - nearest_ssl) / nearest_ssl * 100 < 2:
         liq_level = nearest_ssl
 
-    # ============== PRIORITAS SETUP ==============
+    # PRIORITAS SETUP
     if dip_level:
-        # Validasi: MACD harus tidak bearish ekstrem
         if analysis and analysis["macd"]["dif"] < analysis["macd"]["dea"] * 0.98:
             return make_wait("WAIT — Harga di Fib dip tapi MACD masih bearish")
         setup_type = "BUY_THE_DIP"
-        setup_label = "🅰️ BUY THE DIP (Fib Retracement)"
+        setup_label = f"🅰️ BUY THE DIP (Fib {dip_fib_level})"
         setup_class = "setup-dip"
         entry = dip_level
         sl_candidate = min(fib_786, nearest_ssl) if fib_786 and nearest_ssl else (fib_786 or price - 2 * atr)
         sl = sl_candidate * 0.997
         risk = entry - sl
-        # TP: hanya valid kalau di ATAS entry
         tp1 = fib_382 if (fib_382 and fib_382 > entry * 1.005) else entry + risk * 1.5
         tp2 = fib_236 if (fib_236 and fib_236 > entry * 1.005) else entry + risk * 2.5
         tp3 = swing_high if (swing_high and swing_high > entry * 1.005) else entry + risk * 4.0
-        reasons.append(f"✅ Harga dekat Fib retracement (${dip_level:.6f})")
+        reasons.append(f"✅ Harga dekat Fib retracement {dip_fib_level} (${dip_level:.6f})")
+        if fib_618 and fib_5:
+            reasons.append(f"📐 Range: ${swing_high:.6f} − ${swing_low:.6f}")
+            reasons.append(f"📐 Fib 0.618 = ${fib_618:.6f} | Fib 0.5 = ${fib_5:.6f}")
 
     elif breakout_level:
         setup_type = "BREAKOUT"
-        setup_label = "🅱️ BREAKOUT BUY"
+        setup_label = f"🅱️ BREAKOUT BUY (R ${breakout_level:.6f})"
         setup_class = "setup-breakout"
         entry = breakout_level * 1.002
         sl = max(entry - 2 * atr, (fib_236 or entry - 2 * atr))
@@ -655,16 +692,14 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
         reasons.append(f"✅ Breakout di atas resistance (${breakout_level:.6f})")
 
     elif liq_level:
-        # Validasi: MACD jangan bearish
         if analysis and analysis["macd"]["dif"] < analysis["macd"]["dea"]:
             return make_wait("WAIT — SSL sweep tapi MACD masih bearish")
         setup_type = "LIQUIDITY_GRAB"
-        setup_label = "🅲 LIQUIDITY GRAB (SSL Sweep)"
+        setup_label = f"🅲 LIQUIDITY GRAB (SSL ${liq_level:.6f})"
         setup_class = "setup-liq"
         entry = liq_level * 1.001
         sl = (sell_side[1] * 0.998) if len(sell_side) > 1 else (entry - 2 * atr)
         risk = entry - sl
-        # TP: validasi arah
         tp1 = fib_5 if (fib_5 and fib_5 > entry * 1.005) else entry + risk * 1.5
         tp2 = fib_382 if (fib_382 and fib_382 > entry * 1.005) else entry + risk * 2.5
         tp3 = fib_236 if (fib_236 and fib_236 > entry * 1.005) else entry + risk * 4.0
@@ -694,26 +729,21 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
     if not entry or not sl or sl >= entry:
         return make_wait("WAIT — Setup tidak valid (SL >= entry)")
 
-    # ---------- Validasi SL max 8% ----------
     sl_dist_pct = abs(entry - sl) / entry * 100
     if sl_dist_pct > 8:
         return make_wait(f"WAIT — SL terlalu jauh ({sl_dist_pct:.1f}%)")
 
-    # ---------- Validasi TP arah ----------
     if tp1 <= entry or tp2 <= entry or tp3 <= entry:
         return make_wait("WAIT — TP tidak valid arah")
 
-    # ---------- Risk/Reward ----------
     risk = entry - sl
     if risk <= 0:
         return make_wait("WAIT — Risk <= 0")
     rr = (tp2 - entry) / risk
 
-    # ---------- Validasi RR minimum ----------
     if rr < 1.5:
         return make_wait(f"WAIT — RR terlalu rendah (1:{rr:.2f}, minimal 1:1.5)")
 
-    # ---------- Confidence Score ----------
     confidence = 0
     if analysis:
         if analysis["macd"]["dif"] > analysis["macd"]["dea"]:
@@ -736,13 +766,12 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
 
     confidence_int = min(5, int(round(confidence)))
 
-    # ---------- Invalidations ----------
     invalidations.append(f"❌ Batal jika harga close < ${sl:.6f} ({timeframe})")
     if analysis:
         invalidations.append(f"❌ Batal jika MACD death cross di {timeframe}")
         invalidations.append(f"❌ Batal jika Stoch K > 80 tanpa momentum")
 
-    # ---------- Alternatif ----------
+    # Alternatif
     alternatives = []
     if setup_type != "BUY_THE_DIP" and fib_618 and fib_618 < price:
         alt_sl = (fib_786 * 0.997) if fib_786 else (fib_618 - 2 * atr)
@@ -780,14 +809,12 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
                 "note": f"Entry di SSL ${nearest_ssl:.6f}, target Fib 0.5 ${fib_5:.6f}"
             })
 
-    # ---------- Position Sizing ----------
     max_loss_usd = account_balance * (risk_pct / 100)
     risk_per_unit = entry - sl
     units = max_loss_usd / risk_per_unit if risk_per_unit > 0 else 0
     position_usd = units * entry
     profit_tp2_usd = units * (tp2 - entry)
 
-    # ---------- Signal type mapping ----------
     if setup_type in ["BUY_THE_DIP", "BREAKOUT", "LIQUIDITY_GRAB"]:
         if confidence_int >= 4:
             signal_type = "⭐ STRONG BUY"
@@ -809,46 +836,40 @@ def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=
         "reasons": [r for r in reasons if r],
         "invalidations": invalidations,
         "atr": atr, "price": price,
-        "dip_level": fib_618, "breakout_level": nearest_resistance,
-        "liq_level": nearest_ssl, "alternatives": alternatives,
+        "dip_level": dip_level if dip_level else fib_618,
+        "dip_fib_level": dip_fib_level,
+        "breakout_level": nearest_resistance,
+        "liq_level": nearest_ssl,
+        "alternatives": alternatives,
         "account_balance": account_balance, "risk_pct": risk_pct,
         "max_loss_usd": max_loss_usd, "units": units,
         "position_usd": position_usd, "profit_tp2_usd": profit_tp2_usd,
         "fib": fib, "nearest_support": nearest_support,
         "nearest_resistance": nearest_resistance,
-        "signal_type": signal_type, "signal_strength": signal_strength
+        "signal_type": signal_type, "signal_strength": signal_strength,
+        "swing_high": swing_high, "swing_low": swing_low,
     }
 
 # =========================================================
-# MULTI TIMEFRAME — pakai generate_trade_plan untuk konsistensi
+# MTF SYNCED
 # =========================================================
 def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
-    """
-    Multi-TF analysis yang SINKRON dengan Auto Trade Plan.
-    Return dict combined.
-    """
     results = {}
     for tf in timeframes:
         df = get_data_safe(symbol, tf, min_candles=80)
         if df is None:
             continue
-        # Pakai generate_trade_plan sebagai basis (SAMA dengan chart tab)
         plan = generate_trade_plan(df, symbol, tf)
         analysis = analyze_macd_stoch(df, tf)
         if plan is None or analysis is None:
             continue
-        results[tf] = {
-            "plan": plan,
-            "analysis": analysis,
-            "df": df
-        }
+        results[tf] = {"plan": plan, "analysis": analysis, "df": df}
 
     if not results:
         return None
 
     combined = {"symbol": symbol, "timeframes": results}
 
-    # Hitung buy/sell dari plan
     buy_count = 0; sell_count = 0; wait_count = 0
     for tf in ["4h", "1h", "15m"]:
         if tf in results:
@@ -859,7 +880,6 @@ def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
             elif st_type == "WAIT":
                 wait_count += 1
 
-    # Signal utama
     if buy_count >= 2:
         main_signal = "🟢 STRONG BUY (Multi TF)"
         main_strength = 3
@@ -873,7 +893,6 @@ def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
         main_signal = "🟡 HOLD / WAIT"
         main_strength = 1
 
-    # Best plan (dengan confidence tertinggi)
     best_plan = None
     best_conf = -1
     for tf in ["4h", "1h", "15m"]:
@@ -893,27 +912,94 @@ def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
     return combined
 
 # =========================================================
-# FORMAT PLAN TELEGRAM
+# FORMAT PLAN TELEGRAM — VERSI DETAIL
 # =========================================================
 def format_plan_for_telegram(plan):
-    txt = f"🎯 <b>AUTO TRADE PLAN</b>\n\n"
-    txt += f"<b>{plan['symbol']} · {plan['timeframe']}</b>\n"
+    """Format Auto Trade Plan untuk Telegram — versi detail."""
+    entry = plan["entry"]
+    sl = plan["stop_loss"]
+    tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
+    setup_type = plan["setup_type"]
+
+    sl_pct = (sl / entry - 1) * 100
+    tp1_pct = (tp1 / entry - 1) * 100
+    tp2_pct = (tp2 / entry - 1) * 100
+    tp3_pct = (tp3 / entry - 1) * 100
+
+    txt = f"🎯 <b>AUTO TRADE PLAN</b>\n"
+    txt += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+    txt += f"<b>{plan['symbol']}</b> · {plan['timeframe']}\n"
     txt += f"{plan['setup_label']}\n"
     txt += f"Confidence: {'⭐' * plan['confidence']} ({plan['confidence']}/5)\n\n"
-    txt += f"📈 <b>Entry:</b> ${plan['entry']:.6f}\n"
-    txt += f"🛑 <b>SL:</b> ${plan['stop_loss']:.6f} ({(plan['stop_loss']/plan['entry']-1)*100:+.2f}%)\n"
-    txt += f"🎯 <b>TP1:</b> ${plan['tp1']:.6f} ({(plan['tp1']/plan['entry']-1)*100:+.2f}%)\n"
-    txt += f"🎯 <b>TP2:</b> ${plan['tp2']:.6f} ({(plan['tp2']/plan['entry']-1)*100:+.2f}%)\n"
-    txt += f"🎯 <b>TP3:</b> ${plan['tp3']:.6f} ({(plan['tp3']/plan['entry']-1)*100:+.2f}%)\n"
-    txt += f"📊 <b>R:R:</b> 1 : {plan['rr']:.2f}\n\n"
-    txt += f"💰 <b>Position Sizing</b>\n"
+
+    # Setup Detail
+    if setup_type == "BUY_THE_DIP":
+        fib = plan.get("fib", {})
+        fib_618 = fib.get(0.618, 0)
+        fib_5 = fib.get(0.5, 0)
+        swing_high = plan.get("swing_high", 0) or fib.get("Swing High", 0)
+        swing_low = plan.get("swing_low", 0) or fib.get("Swing Low", 0)
+        dip_lvl = plan.get("dip_fib_level", "0.618")
+
+        txt += f"📐 <b>FIBONACCI SETUP</b>\n"
+        txt += f"Swing High: ${swing_high:.6f}\n"
+        txt += f"Swing Low:  ${swing_low:.6f}\n"
+        txt += f"Fib 0.5:    ${fib_5:.6f}\n"
+        txt += f"Fib 0.618:  ${fib_618:.6f}\n"
+        txt += f"→ Entry di Fib {dip_lvl}: <b>${entry:.6f}</b>\n\n"
+
+    elif setup_type == "LIQUIDITY_GRAB":
+        ssl = plan.get("liq_level", 0)
+        txt += f"💧 <b>LIQUIDITY GRAB (SSL Sweep)</b>\n"
+        txt += f"SSL Level: <b>${ssl:.6f}</b>\n"
+        txt += f"→ Harga sweep SSL, potensi bounce\n\n"
+
+    elif setup_type == "BREAKOUT":
+        res = plan.get("breakout_level", 0)
+        txt += f"🚀 <b>BREAKOUT SETUP</b>\n"
+        txt += f"Resistance: <b>${res:.6f}</b>\n"
+        txt += f"→ Harga tembus resistance\n\n"
+
+    # Level Trading
+    txt += f"📊 <b>LEVEL TRADING</b>\n"
+    txt += f"🎯 Entry: <b>${entry:.6f}</b>\n"
+    txt += f"🛑 SL:    <b>${sl:.6f}</b> ({sl_pct:+.2f}%)\n"
+    txt += f"🥇 TP1:   <b>${tp1:.6f}</b> ({tp1_pct:+.2f}%) — jual 50%\n"
+    txt += f"🥈 TP2:   <b>${tp2:.6f}</b> ({tp2_pct:+.2f}%) — jual 30%\n"
+    txt += f"🥉 TP3:   <b>${tp3:.6f}</b> ({tp3_pct:+.2f}%) — trailing 20%\n"
+    txt += f"📊 R:R:   1 : {plan['rr']:.2f}\n\n"
+
+    # Position Sizing
+    txt += f"💰 <b>POSITION SIZING</b>\n"
     txt += f"Modal: ${plan['account_balance']:.2f}\n"
-    txt += f"Risk: {plan['risk_pct']:.1f}% (${plan['max_loss_usd']:.2f})\n"
-    txt += f"Position: ${plan['position_usd']:.2f} ({plan['units']:.4f} unit)\n\n"
-    txt += f"🧠 <b>Alasan:</b>\n"
+    txt += f"Risk: {plan['risk_pct']:.1f}% = ${plan['max_loss_usd']:.2f}\n"
+    txt += f"Position: <b>${plan['position_usd']:.2f}</b>\n"
+    txt += f"Units: <b>{plan['units']:.6f}</b>\n"
+    txt += f"Target profit (TP2): ${plan['profit_tp2_usd']:.2f}\n\n"
+
+    # Alasan
+    txt += f"🧠 <b>ALASAN:</b>\n"
     for r in plan['reasons'][:6]:
         txt += f"{r}\n"
-    txt += f"\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    txt += "\n"
+
+    # Invalidasi
+    txt += f"⚠️ <b>INVALIDASI:</b>\n"
+    for i in plan['invalidations'][:3]:
+        txt += f"{i}\n"
+    txt += "\n"
+
+    # Alternatif
+    if plan.get("alternatives"):
+        txt += f"📋 <b>SKENARIO ALTERNATIF:</b>\n"
+        for alt in plan['alternatives'][:2]:
+            txt += f"• {alt['name']}\n"
+            txt += f"  Entry: ${alt['entry']:.6f}\n"
+            txt += f"  SL: ${alt['sl']:.6f} · TP: ${alt['tp']:.6f}\n"
+            txt += f"  R:R 1:{alt['rr']:.2f}\n"
+        txt += "\n"
+
+    txt += f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     return txt
 
 # =========================================================
@@ -1213,6 +1299,12 @@ if "watchlist" not in st.session_state:
     st.session_state.watchlist = get_watchlist()
 if "pending_signal" not in st.session_state:
     st.session_state.pending_signal = {}
+else:
+    # Auto-migrate: hapus struktur lama yang tidak lengkap
+    for sym in list(st.session_state.pending_signal.keys()):
+        d = st.session_state.pending_signal[sym]
+        if not isinstance(d, dict) or "tp1" not in d or "tp2" not in d:
+            del st.session_state.pending_signal[sym]
 if "performance_stats" not in st.session_state:
     st.session_state.performance_stats = get_performance()
 
@@ -1266,8 +1358,26 @@ with st.sidebar:
     st.divider()
     st.subheader("📱 Telegram")
     if st.button("🚀 Test Telegram", use_container_width=True):
-        send_telegram_test("🚀 Telegram Connected!")
-        st.success("✅ Test sent!")
+        test_msg = (
+            "🤖 <b>Crypto Signal Pro</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "✅ <b>Koneksi Berhasil!</b>\n\n"
+            "Sistem siap mengirim notifikasi:\n"
+            "• 🎯 Auto Trade Plan\n"
+            "• 📊 Signal Multi-TF\n"
+            "• 🚨 Alert Setup Valid\n\n"
+            "📈 Format pesan:\n"
+            "  - Setup detail (Fib/SSL/BO)\n"
+            "  - Entry, SL, TP1-3\n"
+            "  - RR & Position Sizing\n"
+            "  - Alasan & Invalidasi\n"
+            "  - Skenario Alternatif\n\n"
+            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        if send_telegram_plan(test_msg):
+            st.success("✅ Test terkirim!")
+        else:
+            st.error("❌ Gagal. Cek token/chat ID.")
 
     st.divider()
     st.subheader("📊 Status")
@@ -1287,7 +1397,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Scanner", "📈 Chart + Plan", "🧪 Backtest", "📋 History", "📊 Performance"
 ])
 
-# ==================== TAB 1: SCANNER (SYNCED) ====================
+# ==================== TAB 1: SCANNER ====================
 with tab1:
     st.subheader("📊 Signal Scanner — Synced with Chart")
     st.caption("Signal berdasarkan Auto Trade Plan yang sama dengan Tab Chart")
@@ -1312,13 +1422,11 @@ with tab1:
         status_text.text(f"🔄 Scanning {symbol}...")
 
         result = analyze_mtf_synced(symbol, ["15m", "1h", "4h"])
-
         if not result:
             continue
 
         best_plan = result.get("best_plan")
 
-        # Baris untuk tabel
         signal_data = {
             "Coin": symbol,
             "Signal": result["main_signal"],
@@ -1330,7 +1438,6 @@ with tab1:
             if tf in result["timeframes"]:
                 tf_plan = result["timeframes"][tf]["plan"]
                 tf_analysis = result["timeframes"][tf]["analysis"]
-                # Setup label (dip/breakout/liq/wait)
                 setup_short = {
                     "BUY_THE_DIP": "🅰️ DIP",
                     "BREAKOUT": "🅱️ BO",
@@ -1341,7 +1448,6 @@ with tab1:
                 signal_data[f"{tf.upper()} RSI"] = f"{tf_analysis['rsi']:.1f}"
                 signal_data[f"{tf.upper()} K"] = f"{tf_analysis['stoch']['k']:.1f}"
 
-        # Info RR dari best plan
         if best_plan and best_plan["setup_type"] != "WAIT":
             signal_data["RR"] = f"1:{best_plan['rr']:.2f}"
         else:
@@ -1349,15 +1455,23 @@ with tab1:
 
         all_signals.append(signal_data)
 
-        # Simpan ke pending kalau setup valid
+        # Simpan ke pending — dengan detail
         if (best_plan and best_plan["setup_type"] != "WAIT"
             and best_plan["confidence"] >= 2
             and best_plan["rr"] >= 1.5
             and symbol not in st.session_state.pending_signal):
 
+            fib_data = best_plan.get("fib", {})
+            dip_fib_level = best_plan.get("dip_fib_level") or "0.618"
+            dip_fib_price = best_plan.get("dip_level", best_plan["entry"])
+            swing_high = best_plan.get("swing_high", 0) or fib_data.get("Swing High", 0)
+            swing_low = best_plan.get("swing_low", 0) or fib_data.get("Swing Low", 0)
+            fib_range = swing_high - swing_low if swing_high and swing_low else 0
+
             st.session_state.pending_signal[symbol] = {
                 "signal": best_plan["setup_label"],
                 "time": datetime.now(),
+                "setup_type": best_plan["setup_type"],
                 "entry": best_plan["entry"],
                 "sl": best_plan["stop_loss"],
                 "tp1": best_plan["tp1"],
@@ -1365,19 +1479,28 @@ with tab1:
                 "tp3": best_plan["tp3"],
                 "rr": best_plan["rr"],
                 "timeframe": best_plan["timeframe"],
-                "confidence": best_plan["confidence"]
+                "confidence": best_plan["confidence"],
+                "current_price": best_plan["price"],
+                "reasons": best_plan["reasons"],
+                "invalidations": best_plan["invalidations"],
+                # Detail setup
+                "dip_fib_level": dip_fib_level,
+                "dip_fib_price": dip_fib_price,
+                "swing_high": swing_high,
+                "swing_low": swing_low,
+                "fib_range": fib_range,
+                "breakout_resistance": best_plan.get("breakout_level", 0) or 0,
+                "liq_ssl_price": best_plan.get("liq_level", 0) or 0,
             }
 
-            # Kirim telegram
-            msg = f"⚡ {symbol}\n{best_plan['setup_label']}\nConf: {best_plan['confidence']}⭐\nRR 1:{best_plan['rr']:.2f}"
-            send_telegram_once(symbol, best_plan["setup_label"], msg)
+            # Kirim Telegram dengan format detail
+            send_telegram_once(symbol, best_plan["setup_label"], best_plan)
 
     progress_bar.empty()
     status_text.empty()
 
     if all_signals:
         df_signals = pd.DataFrame(all_signals)
-        # Urut kolom
         col_order = ["Coin", "Signal", "Strength", "Conf", "RR",
                      "15M", "15M RSI", "15M K",
                      "1H", "1H RSI", "1H K",
@@ -1386,38 +1509,152 @@ with tab1:
         df_signals = df_signals[col_order]
         st.dataframe(df_signals, use_container_width=True, hide_index=True)
 
-        # Highlight
         buy_signals = [s for s in all_signals if "BUY" in s["Signal"]]
         if buy_signals:
             st.success(f"🏆 {len(buy_signals)} buy signals found")
     else:
         st.info("ℹ️ Tidak ada data")
 
-    # Pending
+    # ===== PENDING SIGNALS — versi detail dengan angka setup =====
     if st.session_state.pending_signal:
         st.divider()
         st.subheader("⏳ Pending Signals (Valid Setup)")
+        st.caption("Detail level setup — angka Fib / SSL / Resistance yang jadi dasar entry")
+
         pending_data = []
         for symbol, data in st.session_state.pending_signal.items():
             elapsed = (datetime.now() - data["time"]).seconds / 60
             remaining = max(0, hold_minutes - elapsed)
-            entry = data["entry"]; sl = data["sl"]; tp1 = data["tp1"]; tp2 = data["tp2"]
+
+            entry = data.get("entry", 0)
+            sl = data.get("sl", 0)
+            tp1 = data.get("tp1", 0)
+            tp2 = data.get("tp2", 0)
             rr = data.get("rr", 0)
+            setup_type = data.get("setup_type", "")
+            setup_label = data.get("signal", "-")
+            confidence = data.get("confidence", 0)
+            tf = data.get("timeframe", "-")
+            current_price = data.get("current_price", entry)
+
+            dist_pct = (entry - current_price) / current_price * 100 if current_price else 0
+            if abs(dist_pct) < 0.5:
+                dist_str = "🎯 AT ENTRY"
+            elif dist_pct > 0:
+                dist_str = f"⏳ {dist_pct:+.2f}% (tunggu naik)"
+            else:
+                dist_str = f"✅ {dist_pct:+.2f}%"
+
+            # Angka setup
+            if setup_type == "BUY_THE_DIP":
+                fib_level = data.get("dip_fib_level", "0.618")
+                fib_price = data.get("dip_fib_price", entry)
+                reason = f"📐 Fib {fib_level} = {format_price(fib_price)}"
+                setup_angka = f"Fib {fib_level} = {format_price(fib_price)}"
+            elif setup_type == "BREAKOUT":
+                res_level = data.get("breakout_resistance", entry)
+                reason = f"🚀 Tembus R {format_price(res_level)}"
+                setup_angka = f"R = {format_price(res_level)}"
+            elif setup_type == "LIQUIDITY_GRAB":
+                ssl_level = data.get("liq_ssl_price", entry)
+                reason = f"💧 SSL sweep {format_price(ssl_level)}"
+                setup_angka = f"SSL = {format_price(ssl_level)}"
+            else:
+                reason = "-"
+                setup_angka = "-"
+
             pending_data.append({
                 "Coin": symbol,
-                "Setup": data["signal"],
-                "TF": data["timeframe"],
-                "Conf": f"{data.get('confidence', 0)}⭐",
+                "Setup": setup_label,
+                "Angka Setup": setup_angka,
+                "TF": tf,
+                "Conf": f"{confidence}⭐",
+                "Current": format_price(current_price),
                 "Entry": format_price(entry),
+                "Jarak": dist_str,
                 "SL": format_price(sl),
                 "TP1": format_price(tp1),
                 "TP2": format_price(tp2),
                 "RR": f"1:{rr:.2f}",
+                "Alasan": reason,
                 "Left": f"{remaining:.0f}m"
             })
+
         if pending_data:
-            st.dataframe(pd.DataFrame(pending_data),
-                         use_container_width=True, hide_index=True)
+            df_pending = pd.DataFrame(pending_data)
+            st.dataframe(df_pending, use_container_width=True, hide_index=True)
+
+            # Detail expander per coin
+            st.markdown("### 📋 Detail Setup per Coin")
+            for symbol, data in st.session_state.pending_signal.items():
+                setup_type = data.get("setup_type", "")
+                setup_label = data.get("signal", "-")
+                confidence = data.get("confidence", 0)
+                tf = data.get("timeframe", "-")
+                entry = data.get("entry", 0)
+                sl = data.get("sl", 0)
+                tp1 = data.get("tp1", 0)
+                tp2 = data.get("tp2", 0)
+                tp3 = data.get("tp3", 0)
+                rr = data.get("rr", 0)
+                current = data.get("current_price", entry)
+
+                with st.expander(f"**{symbol}** — {setup_label} ({confidence}⭐, {tf})", expanded=False):
+
+                    st.markdown("##### 🎯 Level Setup (Angka Referensi)")
+
+                    if setup_type == "BUY_THE_DIP":
+                        fib_level = data.get("dip_fib_level", "0.618")
+                        fib_price = data.get("dip_fib_price", entry)
+                        swing_high = data.get("swing_high", 0)
+                        swing_low = data.get("swing_low", 0)
+                        fib_range = data.get("fib_range", 0)
+
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Fib Level", str(fib_level))
+                        col2.metric("Fib Price", format_price(fib_price))
+                        col3.metric("Swing High", format_price(swing_high))
+                        col4.metric("Swing Low", format_price(swing_low))
+                        st.caption(f"📐 **Perhitungan Fib {fib_level}:**")
+                        st.caption(f"    Range: {format_price(swing_high)} − {format_price(swing_low)} = {format_price(fib_range)}")
+                        try:
+                            fib_num = float(fib_level)
+                            st.caption(f"    Fib {fib_level}: {format_price(swing_high)} − ({format_price(fib_range)} × {fib_level}) = **{format_price(fib_price)}**")
+                        except:
+                            pass
+
+                    elif setup_type == "BREAKOUT":
+                        res_level = data.get("breakout_resistance", entry)
+                        st.metric("Resistance Level", format_price(res_level))
+                        st.caption(f"🚀 **Breakout:** Harga tembus resistance {format_price(res_level)}")
+
+                    elif setup_type == "LIQUIDITY_GRAB":
+                        ssl_price = data.get("liq_ssl_price", entry)
+                        st.metric("SSL Level", format_price(ssl_price))
+                        st.caption(f"💧 **Liquidity Grab:** Harga sweep SSL di {format_price(ssl_price)}")
+
+                    st.markdown("##### 📊 Level Trading")
+                    c1, c2, c3, c4, c5, c6 = st.columns(6)
+                    c1.metric("Current", format_price(current))
+                    c2.metric("Entry", format_price(entry))
+                    c3.metric("SL", format_price(sl), f"{(sl/entry-1)*100:+.2f}%")
+                    c4.metric("TP1", format_price(tp1), f"{(tp1/entry-1)*100:+.2f}%")
+                    c5.metric("TP2", format_price(tp2), f"{(tp2/entry-1)*100:+.2f}%")
+                    c6.metric("TP3", format_price(tp3), f"{(tp3/entry-1)*100:+.2f}%")
+
+                    st.markdown("##### 🧠 Alasan (Why this setup)")
+                    reasons = data.get("reasons", [])
+                    if reasons:
+                        for r in reasons:
+                            st.markdown(f"- {r}")
+
+                    st.markdown("##### ⚠️ Invalidasi (Batal jika)")
+                    invalidations = data.get("invalidations", [])
+                    if invalidations:
+                        for inv in invalidations:
+                            st.markdown(f"- {inv}")
+                    else:
+                        st.markdown(f"- Harga close di bawah SL {format_price(sl)}")
 
 # ==================== TAB 2: CHART + PLAN ====================
 with tab2:
