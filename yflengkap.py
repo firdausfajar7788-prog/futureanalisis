@@ -1001,7 +1001,7 @@ def format_plan_for_telegram(plan):
     if len(txt) > 4000:
         txt = txt[:3900] + "\n\n[...dipotong...]"
 
-    return txt
+    return txt 
 
 # =========================================================
 # CHART
