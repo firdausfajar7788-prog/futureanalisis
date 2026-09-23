@@ -972,7 +972,6 @@ def format_plan_for_telegram(plan):
     tp3_pct = (tp3 / entry - 1) * 100
 
     txt = f"🎯 <b>AUTO TRADE PLAN</b>\n"
-    txt += f"━━━━━━━━━━━━━━━━━━━━━\n\n"
     txt += f"<b>{esc(plan['symbol'])}</b> · {esc(plan['timeframe'])}\n"
     txt += f"{esc(plan['setup_label'])}\n"
     txt += f"Confidence: {'⭐' * plan['confidence']} ({plan['confidence']}/5)\n\n"
