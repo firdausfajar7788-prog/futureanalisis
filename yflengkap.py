@@ -1,467 +1,472 @@
-import streamlit as st
-import pandas as pd
+"""
+Crypto Signal Pro v2
+- Data: Binance public API (4h native) + fallback yfinance
+- Indikator: Wilder RSI, StochRSI aman, ATR, ADX, MACD, EMA
+- Strategi: Dip (Fib) / Breakout / Liquidity Grab + filter tren TF lebih besar
+- Backtest realistis: fill entry, urutan SL/TP per candle, fee+slippage, partial TP, expectancy, PF, drawdown
+- Paper trading: sinyal disimpan ke Supabase & dilacak otomatis (WIN/LOSS) -> Performance nyata
+- Telegram: cooldown persisten (DB), notifikasi hasil TP/SL
+"""
+import os
+import re
+import json
+import time
+import logging
+import threading
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import yfinance as yf
 import requests
-from datetime import datetime, timedelta
-import warnings
-import os
-import json
-import html
+import streamlit as st
+import yfinance as yf
 from dotenv import load_dotenv
 from streamlit_autorefresh import st_autorefresh
-from supabase import create_client, Client
+from supabase import create_client
 
 load_dotenv()
-warnings.filterwarnings('ignore')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("csp")
 
-# =========================================================
-# PAGE CONFIG
-# =========================================================
-st.set_page_config(
-    page_title="🤖 Crypto Signal Pro",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="🤖 Crypto Signal Pro", layout="wide", initial_sidebar_state="expanded")
 
 # =========================================================
 # CSS
 # =========================================================
 st.markdown("""
 <style>
-    .stApp { background: #0a0a1a; }
-    [data-testid="stMetric"] {
-        background: linear-gradient(145deg, #111827, #0b1220);
-        border: 1px solid #1e293b;
-        border-radius: 16px; padding: 16px;
-        box-shadow: 0 4px 20px rgba(0,255,255,0.05);
-    }
-    .signal-buy {
-        background: linear-gradient(135deg, rgba(0,255,136,0.15), rgba(0,255,136,0.05));
-        border: 1px solid #00ff88; border-radius: 12px;
-        padding: 12px 20px; color: #00ff88; font-weight: 600; font-size: 18px;
-    }
-    .signal-sell {
-        background: linear-gradient(135deg, rgba(255,59,92,0.15), rgba(255,59,92,0.05));
-        border: 1px solid #ff3b5c; border-radius: 12px;
-        padding: 12px 20px; color: #ff3b5c; font-weight: 600; font-size: 18px;
-    }
-    .signal-hold {
-        background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
-        border: 1px solid #ffaa00; border-radius: 12px;
-        padding: 12px 20px; color: #ffaa00; font-weight: 600; font-size: 18px;
-    }
-    .signal-take-profit {
-        background: linear-gradient(135deg, rgba(0,150,255,0.15), rgba(0,150,255,0.05));
-        border: 1px solid #0096ff; border-radius: 12px;
-        padding: 12px 20px; color: #0096ff; font-weight: 600; font-size: 18px;
-    }
-    .pending-signal {
-        background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,170,0,0.05));
-        border: 1px solid #ffaa00; border-radius: 12px;
-        padding: 12px 20px; color: #ffaa00; font-weight: 600; font-size: 16px;
-        animation: blink 1.5s infinite;
-    }
-    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
-    .plan-card {
-        background: linear-gradient(145deg, #0d1425, #070b14);
-        border: 1px solid #1e293b; border-radius: 16px;
-        padding: 20px; margin-bottom: 12px;
-    }
-    .plan-header { font-size: 22px; font-weight: 800; color: #00ff88; margin-bottom: 8px; }
-    .plan-confidence {
-        display: inline-block; background: rgba(0,255,136,0.1);
-        border: 1px solid #00ff88; border-radius: 12px;
-        padding: 4px 12px; color: #00ff88; font-weight: 700; font-size: 14px;
-    }
-    .level-box {
-        background: linear-gradient(145deg, #111827, #0b1220);
-        border: 1px solid #1e293b; border-radius: 12px;
-        padding: 14px; text-align: center;
-    }
-    .level-label { color: #64748b; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
-    .level-value { font-size: 20px; font-weight: 800; color: #f1f5f9; margin: 6px 0; }
-    .level-pct { font-size: 12px; font-weight: 600; }
-    .level-pct.pos { color: #00ff88; }
-    .level-pct.neg { color: #ff3b5c; }
-    .reason-item { padding: 6px 0; color: #cbd5e1; font-size: 14px; }
-    .stButton > button {
-        background: linear-gradient(145deg, #00ff88, #00cc66);
-        color: #000; font-weight: 700; border: none;
-        border-radius: 10px; padding: 10px 24px; transition: all 0.3s ease;
-    }
-    .stButton > button:hover { transform: scale(1.03); box-shadow: 0 0 30px rgba(0,255,255,0.3); }
-    .setup-badge { display: inline-block; padding: 6px 16px; border-radius: 20px; font-weight: 700; font-size: 15px; }
-    .setup-dip { background: rgba(0,255,136,.15); color:#00ff88; border:1px solid #00ff88; }
-    .setup-breakout { background: rgba(0,200,255,.15); color:#00c8ff; border:1px solid #00c8ff; }
-    .setup-liq { background: rgba(168,85,247,.15); color:#a855f7; border:1px solid #a855f7; }
-    .setup-wait { background: rgba(251,191,36,.15); color:#fbbf24; border:1px solid #fbbf24; }
+.stApp { background:#0a0a1a; }
+[data-testid="stMetric"] { background:linear-gradient(145deg,#111827,#0b1220); border:1px solid #1e293b;
+  border-radius:16px; padding:16px; box-shadow:0 4px 20px rgba(0,255,255,.05); }
+.sig { border-radius:12px; padding:12px 20px; font-weight:600; font-size:18px; }
+.signal-buy { background:rgba(0,255,136,.12); border:1px solid #00ff88; color:#00ff88; }
+.signal-sell { background:rgba(255,59,92,.12); border:1px solid #ff3b5c; color:#ff3b5c; }
+.signal-hold { background:rgba(255,170,0,.12); border:1px solid #ffaa00; color:#ffaa00; }
+.signal-take-profit { background:rgba(0,150,255,.12); border:1px solid #0096ff; color:#0096ff; }
+.plan-card { background:linear-gradient(145deg,#0d1425,#070b14); border:1px solid #1e293b;
+  border-radius:16px; padding:20px; margin-bottom:12px; }
+.plan-header { font-size:22px; font-weight:800; color:#00ff88; margin-bottom:8px; }
+.plan-confidence { display:inline-block; background:rgba(0,255,136,.1); border:1px solid #00ff88;
+  border-radius:12px; padding:4px 12px; color:#00ff88; font-weight:700; font-size:14px; }
+.level-box { background:linear-gradient(145deg,#111827,#0b1220); border:1px solid #1e293b;
+  border-radius:12px; padding:14px; text-align:center; margin-bottom:8px; }
+.level-label { color:#64748b; font-size:12px; text-transform:uppercase; letter-spacing:1px; }
+.level-value { font-size:20px; font-weight:800; color:#f1f5f9; margin:6px 0; }
+.level-pct { font-size:12px; font-weight:600; color:#94a3b8; }
+.level-pct.pos { color:#00ff88; } .level-pct.neg { color:#ff3b5c; }
+.reason-item { padding:5px 0; color:#cbd5e1; font-size:14px; }
+.stButton > button { background:linear-gradient(145deg,#00ff88,#00cc66); color:#000; font-weight:700;
+  border:none; border-radius:10px; transition:all .3s ease; }
+.stButton > button:hover { transform:scale(1.03); box-shadow:0 0 30px rgba(0,255,255,.3); }
+.setup-badge { display:inline-block; padding:6px 16px; border-radius:20px; font-weight:700; font-size:15px; }
+.setup-dip { background:rgba(0,255,136,.15); color:#00ff88; border:1px solid #00ff88; }
+.setup-breakout { background:rgba(0,200,255,.15); color:#00c8ff; border:1px solid #00c8ff; }
+.setup-liq { background:rgba(168,85,247,.15); color:#a855f7; border:1px solid #a855f7; }
+.setup-wait { background:rgba(251,191,36,.15); color:#fbbf24; border:1px solid #fbbf24; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# SUPABASE
+# CONFIG
+# =========================================================
+DEFAULT_CFG = dict(
+    min_conf=3,        # confidence minimum (1-5) untuk alert
+    min_rr=1.5,        # RR minimum ke TP2
+    max_sl_pct=8.0,    # jarak SL maksimum (%)
+    min_vol=0.5,       # RVOL minimum
+    use_htf=True,      # filter tren TF lebih besar
+    fee_pct=0.2,       # fee + slippage round-trip (%)
+    cooldown_min=30,   # cooldown alert per coin+setup (menit)
+)
+TIMEFRAMES = ["15m", "1h", "4h"]
+HTF_OF = {"15m": "1h", "1h": "4h", "4h": None}
+RESAMPLE_RULE = {"1h": "60min", "4h": "240min", "1d": "1D"}
+HTF_RULE_FOR_BACKTEST = {"15m": "60min", "1h": "240min"}
+SETUP_SHORT = {"BUY_THE_DIP": "🅰️ DIP", "BREAKOUT": "🅱️ BO", "LIQUIDITY_GRAB": "🅲 LIQ", "WAIT": "⏳ WAIT"}
+VALID_SETUPS = ("BUY_THE_DIP", "BREAKOUT", "LIQUIDITY_GRAB")
+
+
+def utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def get_secret(name, default=""):
+    v = os.getenv(name)
+    if v:
+        return v.strip()
+    try:
+        return str(st.secrets.get(name, default)).strip()
+    except Exception:
+        return default
+
+
+# =========================================================
+# SUPABASE (opsional — app tetap jalan tanpa DB)
 # =========================================================
 @st.cache_resource
-def get_supabase() -> Client:
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_KEY")
+def get_supabase():
+    url, key = get_secret("SUPABASE_URL"), get_secret("SUPABASE_KEY")
     if not url or not key:
         try:
-            url = st.secrets["supabase"]["url"]
-            key = st.secrets["supabase"]["key"]
-        except:
-            st.error("❌ SUPABASE_URL atau SUPABASE_KEY tidak ditemukan")
-            st.stop()
-    return create_client(url, key)
+            url, key = st.secrets["supabase"]["url"], st.secrets["supabase"]["key"]
+        except Exception:
+            return None
+    try:
+        return create_client(url, key)
+    except Exception as e:
+        log.error("Supabase init error: %s", e)
+        return None
+
+
+def db_ok():
+    return get_supabase() is not None
+
 
 def get_watchlist():
-    supabase = get_supabase()
+    sb = get_supabase()
+    if sb is None:
+        return ["BTC", "ETH", "SOL"]
     try:
-        res = supabase.table("watchlist").select("symbol").order("added_at").execute()
-        return [row["symbol"] for row in res.data] if res.data else ["BTC"]
-    except:
+        res = sb.table("watchlist").select("symbol").order("added_at").execute()
+        return [r["symbol"] for r in res.data] if res.data else ["BTC"]
+    except Exception as e:
+        log.warning("get_watchlist: %s", e)
         return ["BTC"]
 
+
 def add_coin(symbol):
-    supabase = get_supabase()
-    try:
-        supabase.table("watchlist").insert({"symbol": symbol.upper()}).execute()
+    sb = get_supabase()
+    if sb is None:
         return True
-    except:
-        return False
-
-def remove_coin(symbol):
-    supabase = get_supabase()
     try:
-        res = supabase.table("watchlist").delete().eq("symbol", symbol.upper()).execute()
-        return len(res.data) > 0
-    except:
-        return False
-
-def is_duplicate_signal(symbol, signal, minutes=5):
-    supabase = get_supabase()
-    try:
-        five_min_ago = (datetime.now() - timedelta(minutes=minutes)).isoformat()
-        res = supabase.table("signal_history")\
-            .select("id").eq("symbol", symbol).eq("signal", signal)\
-            .gte("timestamp", five_min_ago).execute()
-        return len(res.data) > 0
-    except:
-        return False
-
-def save_signal(data):
-    supabase = get_supabase()
-    try:
-        symbol = data.get("symbol"); signal = data.get("signal")
-        if is_duplicate_signal(symbol, signal, minutes=5):
-            return False
-        data["timestamp"] = datetime.now().isoformat()
-        supabase.table("signal_history").insert(data).execute()
-        return True
-    except:
-        return False
-
-def save_trade_plan(plan):
-    supabase = get_supabase()
-    try:
-        data = {
-            "symbol": plan["symbol"], "timeframe": plan["timeframe"],
-            "setup_type": plan["setup_type"], "confidence": plan["confidence"],
-            "entry": float(plan["entry"]), "stop_loss": float(plan["stop_loss"]),
-            "tp1": float(plan["tp1"]), "tp2": float(plan["tp2"]), "tp3": float(plan["tp3"]),
-            "rr": float(plan["rr"]),
-            "reasons": json.dumps(plan["reasons"]),
-            "created_at": datetime.now().isoformat()
-        }
-        supabase.table("trade_plans").insert(data).execute()
+        sb.table("watchlist").insert({"symbol": symbol}).execute()
         return True
     except Exception as e:
-        print(f"Save plan error: {e}")
+        log.warning("add_coin: %s", e)
         return False
 
-def get_signal_history(limit=100):
-    supabase = get_supabase()
+
+def remove_coin(symbol):
+    sb = get_supabase()
+    if sb is None:
+        return True
     try:
-        res = supabase.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
-        return res.data
-    except:
+        sb.table("watchlist").delete().eq("symbol", symbol).execute()
+        return True
+    except Exception as e:
+        log.warning("remove_coin: %s", e)
+        return False
+
+
+def plan_to_row(plan, source="auto"):
+    return {
+        "timestamp": utcnow().isoformat(),
+        "symbol": plan["symbol"], "timeframe": plan["timeframe"],
+        "setup_type": plan["setup_type"], "signal": plan["setup_label"],
+        "confidence": int(plan["confidence"]), "order_type": plan.get("order_type", "-"),
+        "entry": float(plan["entry"]), "sl": float(plan["stop_loss"]),
+        "tp1": float(plan["tp1"]), "tp2": float(plan["tp2"]), "tp3": float(plan["tp3"]),
+        "rr": float(plan["rr"]),
+        "reasons": json.dumps(plan["reasons"], ensure_ascii=False),
+        "status": "OPEN", "source": source,
+    }
+
+
+def save_signal(row):
+    sb = get_supabase()
+    if sb is None:
+        return False
+    try:
+        sb.table("signal_history").insert(row).execute()
+        return True
+    except Exception as e:
+        log.warning("save_signal: %s", e)
+        return False
+
+
+def already_alerted(symbol, setup_type, minutes):
+    """Cooldown persisten: cek session + database."""
+    key = (symbol, setup_type)
+    last = st.session_state.alert_times.get(key)
+    if last and (utcnow() - last).total_seconds() < minutes * 60:
+        return True
+    sb = get_supabase()
+    if sb is None:
+        return False
+    try:
+        cutoff = (utcnow() - timedelta(minutes=minutes)).isoformat()
+        res = (sb.table("signal_history").select("id").eq("symbol", symbol)
+               .eq("setup_type", setup_type).gte("timestamp", cutoff).limit(1).execute())
+        return len(res.data) > 0
+    except Exception as e:
+        log.warning("already_alerted: %s", e)
+        return False
+
+
+def get_active_signals():
+    sb = get_supabase()
+    if sb is None:
+        return []
+    try:
+        res = sb.table("signal_history").select("*").in_("status", ["OPEN", "FILLED"]).execute()
+        return res.data or []
+    except Exception as e:
+        log.warning("get_active_signals: %s", e)
         return []
 
-def update_performance(stats):
-    supabase = get_supabase()
+
+def update_signal(sig_id, fields):
+    sb = get_supabase()
+    if sb is None:
+        return False
     try:
-        supabase.table("performance").upsert(
-            {"key": "performance_stats", "value": stats, "updated_at": datetime.now().isoformat()},
-            on_conflict="key"
-        ).execute()
+        sb.table("signal_history").update(fields).eq("id", sig_id).execute()
         return True
-    except:
+    except Exception as e:
+        log.warning("update_signal: %s", e)
         return False
 
-def get_performance():
-    supabase = get_supabase()
-    default = {"total_signals": 0, "wins": 0, "losses": 0, "total_profit": 0, "win_rate": 0}
+
+def get_signal_history(limit=300):
+    sb = get_supabase()
+    if sb is None:
+        return []
     try:
-        res = supabase.table("performance").select("value").eq("key", "performance_stats").execute()
-        if res.data and len(res.data) > 0:
-            return res.data[0]["value"]
-        return default
-    except:
-        return default
+        res = sb.table("signal_history").select("*").order("timestamp", desc=True).limit(limit).execute()
+        return res.data or []
+    except Exception as e:
+        log.warning("get_signal_history: %s", e)
+        return []
+
 
 # =========================================================
 # TELEGRAM
 # =========================================================
-if "sent_signals" not in st.session_state:
-    st.session_state.sent_signals = {}
-if "last_telegram_time" not in st.session_state:
-    st.session_state.last_telegram_time = {}
-
-def send_telegram_once(symbol, signal, result):
-    """Kirim notifikasi signal ke Telegram — dengan debug log."""
-    now = datetime.now()
-    debug = st.session_state.get("_tg_debug_log", [])
-    debug.append(f"[{now.strftime('%H:%M:%S')}] === {symbol} ===")
-
-    # Cooldown
-    last_time = st.session_state.last_telegram_time.get(symbol)
-    if last_time is not None:
-        diff = (now - last_time).seconds / 60
-        debug.append(f"⏱️ Last sent {diff:.1f}m ago")
-        if diff < 10:
-            debug.append(f"❌ SKIP: cooldown")
-            st.session_state["_tg_debug_log"] = debug[-50:]
-            return False
-    else:
-        debug.append("⏱️ Never sent — OK")
-
-    signal_key = f"{symbol}_{signal}_{now.strftime('%Y%m%d_%H%M')}"
-    if signal_key in st.session_state.sent_signals:
-        debug.append(f"❌ SKIP: duplicate key")
-        st.session_state["_tg_debug_log"] = debug[-50:]
-        return False
-
+def send_telegram(text):
+    token, chat = get_secret("TELEGRAM_BOT_TOKEN"), get_secret("TELEGRAM_CHAT_ID")
+    if not token or not chat:
+        return False, "TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID belum diisi"
+    if len(text) > 4000:
+        text = text[:3900] + "\n[...dipotong...]"
     try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "").strip()
-
-        if not bot_token or not chat_id:
-            debug.append(f"❌ SKIP: token/chat empty")
-            st.session_state["_tg_debug_log"] = debug[-50:]
-            return False
-
-        # Format message
-        if isinstance(result, dict):
-            try:
-                msg = format_plan_for_telegram(result)
-                debug.append(f"📝 Msg: {len(msg)} chars")
-            except Exception as e:
-                debug.append(f"❌ Format error: {e}")
-                st.session_state["_tg_debug_log"] = debug[-50:]
-                return False
-        else:
-            msg = f"⚡ <b>SIGNAL</b>\n\n<b>{symbol}</b>\n{signal}"
-            debug.append(f"📝 Simple msg: {len(msg)} chars")
-
-        if len(msg) > 4000:
-            debug.append(f"❌ SKIP: too long ({len(msg)})")
-            st.session_state["_tg_debug_log"] = debug[-50:]
-            return False
-
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        r = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": msg,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=10)
-
-        debug.append(f"📥 HTTP {r.status_code}")
-
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat, "text": text, "parse_mode": "HTML",
+                                "disable_web_page_preview": True}, timeout=10)
         if r.status_code == 200:
-            st.session_state.sent_signals[signal_key] = True
-            st.session_state.last_telegram_time[symbol] = now
-            debug.append(f"✅ SENT OK")
-            st.session_state["_tg_debug_log"] = debug[-50:]
-            return True
-        else:
-            try:
-                err = r.json()
-                debug.append(f"❌ Telegram: {err.get('description', 'unknown')}")
-            except:
-                debug.append(f"❌ Body: {r.text[:200]}")
-            st.session_state["_tg_debug_log"] = debug[-50:]
-            return False
-
+            return True, ""
+        try:
+            return False, r.json().get("description", f"HTTP {r.status_code}")
+        except Exception:
+            return False, f"HTTP {r.status_code}"
     except Exception as e:
-        debug.append(f"❌ Exception: {str(e)}")
-        st.session_state["_tg_debug_log"] = debug[-50:]
-    return False
+        return False, str(e)
 
-def send_telegram_plan(plan_text):
-    """Kirim pesan HTML ke Telegram — dengan error detail."""
-    try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "").strip()
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "").strip()
 
-        if not bot_token or not chat_id:
-            st.error(f"❌ Token/chat kosong")
-            return False
+def esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-        if len(plan_text) > 4096:
-            plan_text = plan_text[:4000] + "\n[...dipotong...]"
 
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        r = requests.post(url, json={
-            "chat_id": chat_id,
-            "text": plan_text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }, timeout=10)
-
-        if r.status_code == 200:
-            return True
-        else:
-            try:
-                err = r.json()
-                desc = err.get("description", "unknown")
-                st.error(f"❌ Telegram: {desc}")
-            except:
-                st.error(f"❌ HTTP {r.status_code}: {r.text[:200]}")
-            return False
-
-    except Exception as e:
-        st.error(f"❌ Exception: {str(e)}")
-        return False
-
-def send_telegram_test(message):
-    """Kirim test message ke Telegram."""
-    try:
-        bot_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "")
-        if bot_token and chat_id:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            requests.post(url, json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML"
-            }, timeout=10)
-            return True
-    except:
-        pass
-    return False
-
-# =========================================================
-# FORMAT PRICE
-# =========================================================
-def format_price(value):
-    if pd.isna(value) or value is None:
+def format_price(v):
+    if v is None or pd.isna(v):
         return "-"
-    if value >= 1000: return f"$ {value:,.2f}"
-    elif value >= 100: return f"$ {value:,.3f}"
-    elif value >= 1: return f"$ {value:,.4f}"
-    elif value >= 0.01: return f"$ {value:,.6f}"
-    else: return f"$ {value:,.8f}"
+    if v >= 1000: return f"$ {v:,.2f}"
+    if v >= 100: return f"$ {v:,.3f}"
+    if v >= 1: return f"$ {v:,.4f}"
+    if v >= 0.01: return f"$ {v:,.6f}"
+    return f"$ {v:,.8f}"
+
+
+def format_plan_for_telegram(plan):
+    e, sl = plan["entry"], plan["stop_loss"]
+    pct = lambda x: (x / e - 1) * 100
+    t = f"🎯 <b>AUTO TRADE PLAN</b>\n<b>{esc(plan['symbol'])}</b> · {esc(plan['timeframe'])}\n"
+    t += f"{esc(plan['setup_label'])}\nConfidence: {'⭐' * plan['confidence']} ({plan['confidence']}/5)\n"
+    t += f"Order: {esc(plan.get('order_type', '-'))}\n\n"
+    st_ = plan["setup_type"]
+    if st_ == "BUY_THE_DIP" and plan.get("fib"):
+        f = plan["fib"]
+        t += f"📐 <b>FIB</b> High {f['high']:.6f} · Low {f['low']:.6f}\n\n"
+    elif st_ == "LIQUIDITY_GRAB":
+        t += f"💧 SSL sweep: <b>{plan.get('liq_level') or 0:.6f}</b>\n\n"
+    elif st_ == "BREAKOUT":
+        t += f"🚀 Resistance: <b>{plan.get('breakout_level') or 0:.6f}</b>\n\n"
+    t += "📊 <b>LEVEL</b>\n"
+    t += f"🎯 Entry: <b>{e:.6f}</b>\n🛑 SL: <b>{sl:.6f}</b> ({pct(sl):+.2f}%)\n"
+    t += f"🥇 TP1: <b>{plan['tp1']:.6f}</b> ({pct(plan['tp1']):+.2f}%)\n"
+    t += f"🥈 TP2: <b>{plan['tp2']:.6f}</b> ({pct(plan['tp2']):+.2f}%)\n"
+    t += f"🥉 TP3: <b>{plan['tp3']:.6f}</b> ({pct(plan['tp3']):+.2f}%)\n"
+    t += f"📊 R:R 1 : {plan['rr']:.2f}\n\n"
+    t += (f"💰 <b>SIZING</b>\nModal ${plan['account_balance']:.2f} · Risk {plan['risk_pct']:.1f}% "
+          f"= ${plan['max_loss_usd']:.2f}\nPosisi <b>${plan['position_usd']:.2f}</b> · "
+          f"Unit <b>{plan['units']:.6f}</b>\n\n")
+    t += "🧠 <b>ALASAN</b>\n" + "\n".join(esc(r) for r in plan["reasons"][:6]) + "\n\n"
+    t += "⚠️ <b>INVALIDASI</b>\n" + "\n".join(esc(i) for i in plan["invalidations"][:3]) + "\n\n"
+    for alt in plan.get("alternatives", [])[:2]:
+        t += f"• {esc(alt['name'])}: entry {alt['entry']:.6f} · SL {alt['sl']:.6f} · TP {alt['tp']:.6f}\n"
+    t += f"\n🕐 {utcnow().strftime('%Y-%m-%d %H:%M')} UTC\n<i>Bukan saran finansial.</i>"
+    return t
+
 
 # =========================================================
-# GET DATA
+# DATA (Binance + fallback yfinance, cache thread-safe)
 # =========================================================
-@st.cache_data(ttl=30, show_spinner=False)
-def get_data(symbol, interval, period):
+_CACHE, _LOCK = {}, threading.Lock()
+BINANCE_HOSTS = ["https://data-api.binance.vision", "https://api.binance.com", "https://api.binance.us"]
+
+
+def _cached(key, ttl, fn):
+    now = time.time()
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if hit and now - hit[0] < ttl:
+            return hit[1]
+    val = fn()
+    with _LOCK:
+        if len(_CACHE) > 400:
+            _CACHE.clear()
+        _CACHE[key] = (now, val)
+    return val
+
+
+def resample_ohlc(df, rule):
+    out = (df.set_index("Time").resample(rule)
+           .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+           .dropna().reset_index())
+    return out
+
+
+def _fetch_binance(symbol, interval, limit):
+    params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
+    for host in BINANCE_HOSTS:
+        try:
+            r = requests.get(f"{host}/api/v3/klines", params=params, timeout=8)
+            if r.status_code != 200:
+                continue
+            raw = r.json()
+            if not raw:
+                continue
+            df = pd.DataFrame(raw, columns=["t", "Open", "High", "Low", "Close", "Volume",
+                                            "ct", "qv", "n", "tb", "tq", "ig"])
+            df["Time"] = pd.to_datetime(df["t"], unit="ms")
+            for c in ["Open", "High", "Low", "Close", "Volume"]:
+                df[c] = df[c].astype(float)
+            return df[["Time", "Open", "High", "Low", "Close", "Volume"]]
+        except Exception as e:
+            log.warning("binance %s: %s", host, e)
+    return None
+
+
+def _fetch_yf(symbol, interval, limit):
+    yf_int = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(interval)
+    period = {"15m": "30d", "1h": "90d", "4h": "180d", "1d": "1y"}.get(interval)
+    if not yf_int:
+        return None
     try:
-        ticker = f"{symbol}-USD"
-        df = yf.download(ticker, interval=interval, period=period, progress=False)
+        df = yf.download(f"{symbol}-USD", interval=yf_int, period=period, progress=False, auto_adjust=False)
         if df is None or df.empty:
             return None
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         df = df.reset_index()
-        df.rename(columns={df.columns[0]: "Time"}, inplace=True)
-        df["Time"] = pd.to_datetime(df["Time"])
-        if df["Close"].iloc[-1] <= 0:
-            return None
-        return df
-    except:
+        df = df.rename(columns={df.columns[0]: "Time"})
+        t = pd.to_datetime(df["Time"])
+        if t.dt.tz is not None:
+            t = t.dt.tz_convert("UTC").dt.tz_localize(None)
+        df["Time"] = t
+        df = df[["Time", "Open", "High", "Low", "Close", "Volume"]].dropna()
+        if interval == "4h":
+            df = resample_ohlc(df, RESAMPLE_RULE["4h"])
+        return df.tail(limit).reset_index(drop=True)
+    except Exception as e:
+        log.warning("yfinance %s: %s", symbol, e)
         return None
 
-def get_data_safe(symbol, interval, min_candles=20):
-    periods = {
-        "1m": ["1d", "5d", "7d"],
-        "5m": ["2d", "5d", "7d", "14d"],
-        "15m": ["5d", "7d", "14d", "30d"],
-        "30m": ["7d", "14d", "30d"],
-        "1h": ["7d", "14d", "30d", "60d"],
-        "4h": ["14d", "30d", "60d", "90d"],
-        "1d": ["30d", "60d", "90d", "1y"],
-    }
-    for period in periods.get(interval, ["7d", "14d", "30d"]):
-        df = get_data(symbol, interval, period)
-        if df is not None and len(df) >= min_candles:
-            return df
-    return None
+
+def get_data(symbol, interval, limit=500):
+    def _load():
+        df = _fetch_binance(symbol, interval, limit)
+        if df is None:
+            df = _fetch_yf(symbol, interval, limit)
+        if df is None or df.empty or df["Close"].iloc[-1] <= 0:
+            return None
+        return df.reset_index(drop=True)
+    return _cached(("d", symbol, interval, limit), 30, _load)
+
 
 # =========================================================
 # INDIKATOR
 # =========================================================
-def EMA(df, period=20):
-    return df["Close"].ewm(span=period, adjust=False).mean()
+def EMA(s, p):
+    return s.ewm(span=p, adjust=False).mean()
 
-def MACD(df, fast=12, slow=26, signal=9):
-    ema_fast = EMA(df, fast)
-    ema_slow = EMA(df, slow)
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    histogram = macd_line - signal_line
-    return macd_line, signal_line, histogram
 
-def StochasticRSI(df, period=14, smooth_k=3, smooth_d=3):
-    delta = df["Close"].diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    stoch_rsi = (rsi - rsi.rolling(period).min()) / (rsi.rolling(period).max() - rsi.rolling(period).min()) * 100
-    k = stoch_rsi.rolling(smooth_k).mean()
-    d = k.rolling(smooth_d).mean()
-    return k, d, rsi
+def RSI(close, period=14):
+    d = close.diff()
+    ag = d.clip(lower=0).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    al = (-d.clip(upper=0)).ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    rsi = 100 - 100 / (1 + ag / al.replace(0, np.nan))
+    return rsi.where(al != 0, 100.0)
 
-def get_atr(df, period=14):
-    high = df["High"]; low = df["Low"]; close = df["Close"]
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
+
+def MACD(close, fast=12, slow=26, sig=9):
+    line = EMA(close, fast) - EMA(close, slow)
+    signal = line.ewm(span=sig, adjust=False).mean()
+    return line, signal, line - signal
+
+
+def StochRSI(close, period=14, smooth_k=3, smooth_d=3):
+    rsi = RSI(close, period)
+    lo, hi = rsi.rolling(period).min(), rsi.rolling(period).max()
+    st_ = ((rsi - lo) / (hi - lo).replace(0, np.nan) * 100).fillna(50)
+    k = st_.rolling(smooth_k).mean()
+    return k, k.rolling(smooth_d).mean(), rsi
+
+
+def ATR(df, period=14):
+    h, l, c = df["High"], df["Low"], df["Close"]
+    tr = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+
+def ADX(df, period=14):
+    h, l = df["High"], df["Low"]
+    up, dn = h.diff(), -l.diff()
+    plus = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=df.index)
+    minus = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=df.index)
+    atr = ATR(df, period)
+    pdi = 100 * plus.ewm(alpha=1 / period, adjust=False).mean() / atr
+    mdi = 100 * minus.ewm(alpha=1 / period, adjust=False).mean() / atr
+    dx = 100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)
+    return dx.ewm(alpha=1 / period, adjust=False).mean()
+
 
 # =========================================================
-# PIVOTS / LIQUIDITY / S&R / FIB
+# LEVEL: pivot, liquidity, S/R, fibonacci
 # =========================================================
 def get_pivots(df, left=3, right=3):
-    h = df["High"]; l = df["Low"]
-    ph = (h == h.rolling(left + right + 1, center=True).max()).fillna(False)
-    pl = (l == l.rolling(left + right + 1, center=True).min()).fillna(False)
-    return ph, pl
+    w = left + right + 1
+    ph = (df["High"] == df["High"].rolling(w, center=True).max()).fillna(False)
+    pl = (df["Low"] == df["Low"].rolling(w, center=True).min()).fillna(False)
+    return ph, pl  # `right` candle terakhir otomatis False (belum terkonfirmasi)
 
-def get_liquidity_zones(df, lookback=100, tolerance_pct=0.5):
+
+def get_liquidity_zones(df, lookback=100, tol_pct=0.5, left=3, right=3):
+    """Return (buy_side di atas harga, urut terdekat dulu), (sell_side di bawah harga, terdekat dulu)."""
     if df is None or len(df) < 30:
         return [], []
     recent = df.tail(lookback)
-    ph, pl = get_pivots(recent)
-    highs = recent.loc[ph, "High"].tolist()
-    lows = recent.loc[pl, "Low"].tolist()
+    ph, pl = get_pivots(recent, left, right)
     price = float(df["Close"].iloc[-1])
-    tol = price * (tolerance_pct / 100)
+    tol = price * tol_pct / 100
 
     def cluster(levels):
-        if not levels: return []
-        levels = sorted(levels)
-        zones, cur = [], [levels[0]]
+        if not levels:
+            return []
+        levels, zones, cur = sorted(levels), [], []
+        cur = [levels[0]]
         for v in levels[1:]:
             if v - cur[-1] <= tol:
                 cur.append(v)
@@ -470,921 +475,652 @@ def get_liquidity_zones(df, lookback=100, tolerance_pct=0.5):
         zones.append(sum(cur) / len(cur))
         return zones
 
-    buy_side = [z for z in cluster(highs) if z > price]
-    sell_side = [z for z in cluster(lows) if z < price]
+    buy_side = sorted(z for z in cluster(recent.loc[ph, "High"].tolist()) if z > price)
+    sell_side = sorted((z for z in cluster(recent.loc[pl, "Low"].tolist()) if z < price), reverse=True)
     return buy_side, sell_side
 
-def get_support_resistance(df, lookback=100):
-    buy_side, sell_side = get_liquidity_zones(df, lookback)
-    supports = sorted(sell_side, reverse=True)
-    resistances = sorted(buy_side)
-    return supports, resistances
+
+def get_support_resistance(df):
+    """S/R struktur lebih besar (pivot 5/5, 200 candle, toleransi 0.8%). Return (supports, resistances)."""
+    res, sup = get_liquidity_zones(df, 200, 0.8, 5, 5)
+    return sup, res
+
 
 def get_fibonacci(df, lookback=100):
+    """Arah ditentukan dari urutan swing: low lebih dulu -> uptrend (retracement dari high)."""
     if df is None or len(df) < 30:
-        return {}
-    recent = df.tail(lookback)
-    swing_high = float(recent["High"].max())
-    swing_low = float(recent["Low"].min())
-    diff = swing_high - swing_low
-    if diff <= 0: return {}
-    price = float(df["Close"].iloc[-1])
-    levels = {}
-    if price > (swing_low + swing_high) / 2:
-        for r in [0.236, 0.382, 0.5, 0.618, 0.786]:
-            levels[r] = swing_high - diff * r
-        levels["Swing High"] = swing_high
-        levels["Swing Low"] = swing_low
-    else:
-        for r in [0.236, 0.382, 0.5, 0.618, 0.786]:
-            levels[r] = swing_low + diff * r
-        levels["Swing Low"] = swing_low
-        levels["Swing High"] = swing_high
-    return levels
+        return None
+    r = df.tail(lookback).reset_index(drop=True)
+    hi_i, lo_i = int(r["High"].idxmax()), int(r["Low"].idxmin())
+    hi, lo = float(r["High"].iloc[hi_i]), float(r["Low"].iloc[lo_i])
+    diff = hi - lo
+    if diff <= 0:
+        return None
+    trend = "up" if lo_i < hi_i else "down"
+    ratios = [0.236, 0.382, 0.5, 0.618, 0.786]
+    levels = {x: hi - diff * x for x in ratios} if trend == "up" else {x: lo + diff * x for x in ratios}
+    return {"trend": trend, "high": hi, "low": lo, "range": diff, "levels": levels}
+
 
 # =========================================================
-# ANALISIS MACD + STOCH
+# ANALISIS MOMENTUM
 # =========================================================
 def analyze_macd_stoch(df, timeframe=""):
-    if df is None or len(df) < 30:
+    if df is None or len(df) < 60:
         return None
-    macd_line, signal_line, histogram = MACD(df)
-    stoch_k, stoch_d, rsi = StochasticRSI(df)
-    ema20 = EMA(df, 20); ema50 = EMA(df, 50)
+    close = df["Close"]
+    macd_l, macd_s, hist = MACD(close)
+    k, d, rsi = StochRSI(close)
+    ema20, ema50 = EMA(close, 20), EMA(close, 50)
+    adx = ADX(df)
 
-    last = df.iloc[-1]
-    price = float(last["Close"])
-    volume = float(last["Volume"])
-    vol_ma = float(df["Volume"].rolling(10).mean().iloc[-1])
-    volume_ratio = volume / vol_ma if vol_ma > 0 else 1
+    price = float(close.iloc[-1])
+    # RVOL pakai candle yang sudah close (candle terakhir masih berjalan)
+    vol_ma = float(df["Volume"].iloc[-22:-2].mean())
+    vol_ratio = float(df["Volume"].iloc[-2]) / vol_ma if vol_ma > 0 else 1.0
 
-    macd_val = float(macd_line.iloc[-1]); signal_val = float(signal_line.iloc[-1])
-    hist_val = float(histogram.iloc[-1])
-    hist_prev = float(histogram.iloc[-2]) if len(histogram) > 1 else hist_val
-    macd_prev = float(macd_line.iloc[-2]) if len(macd_line) > 1 else macd_val
-    signal_prev = float(signal_line.iloc[-2]) if len(signal_line) > 1 else signal_val
+    g = lambda s, i=-1: float(s.iloc[i])
+    dif, dea, h0, h1 = g(macd_l), g(macd_s), g(hist), g(hist, -2)
+    dif_p, dea_p = g(macd_l, -2), g(macd_s, -2)
+    k0, d0, k1, d1 = g(k), g(d), g(k, -2), g(d, -2)
+    e20, e50, rsi0 = g(ema20), g(ema50), g(rsi)
 
-    stoch_k_val = float(stoch_k.iloc[-1]); stoch_d_val = float(stoch_d.iloc[-1])
-    stoch_k_prev = float(stoch_k.iloc[-2]) if len(stoch_k) > 1 else stoch_k_val
-    stoch_d_prev = float(stoch_d.iloc[-2]) if len(stoch_d) > 1 else stoch_d_val
-    rsi_val = float(rsi.iloc[-1])
-    ema20_val = float(ema20.iloc[-1]); ema50_val = float(ema50.iloc[-1])
+    m_gc, m_dc = dif_p < dea_p and dif > dea, dif_p > dea_p and dif < dea
+    s_gc, s_dc = k1 < d1 and k0 > d0, k1 > d1 and k0 < d0
+    hist_up = h0 > h1
 
-    macd_golden_cross = (macd_prev < signal_prev) and (macd_val > signal_val)
-    macd_death_cross = (macd_prev > signal_prev) and (macd_val < signal_val)
-    stoch_golden_cross = (stoch_k_prev < stoch_d_prev) and (stoch_k_val > stoch_d_val)
-    stoch_death_cross = (stoch_k_prev > stoch_d_prev) and (stoch_k_val < stoch_d_val)
+    buy = (dif > dea) + (h0 > 0) + 2 * m_gc + (hist_up and h0 > 0)
+    buy += 2 if (k0 < 20 and d0 < 20) else (1 if (20 <= k0 <= 40 and k0 > d0) else 0)
+    buy += 2 * (s_gc and k0 < 40) + 0.5 * (k0 > d0) + (1 if price > e20 > e50 else 0.5 * (price > e20))
+    buy += 0.5 * (vol_ratio > 1.2) + 0.5 * (rsi0 < 70)
+    sell = (dif < dea) + (h0 < 0) + 2 * m_dc + ((not hist_up) and h0 > 0)
+    sell += 2 if (k0 > 80 and d0 > 80) else (1 if 80 <= k0 <= 95 else 0)
+    sell += 2 * (s_dc and k0 > 80) + 0.5 * (k0 < d0) + (1 if price < e20 < e50 else 0.5 * (price < e20))
+    sell += 0.5 * (rsi0 > 30)
 
-    hist_increasing = hist_val > hist_prev
-    hist_decreasing = hist_val < hist_prev
-    hist_positive = hist_val > 0
-    hist_negative = hist_val < 0
-
-    bullish_trend = price > ema20_val > ema50_val
-    bearish_trend = price < ema20_val < ema50_val
-    volume_confirmed = volume_ratio > 1.2
-
-    buy_score = 0; sell_score = 0
-    if macd_val > signal_val: buy_score += 1
-    if hist_positive: buy_score += 1
-    if macd_golden_cross: buy_score += 2
-    if hist_increasing and hist_positive: buy_score += 1
-    if stoch_k_val < 20 and stoch_d_val < 20: buy_score += 2
-    elif 20 <= stoch_k_val <= 40 and stoch_k_val > stoch_d_val: buy_score += 1
-    if stoch_golden_cross and stoch_k_val < 40: buy_score += 2
-    if stoch_k_val > stoch_d_val: buy_score += 0.5
-    if bullish_trend: buy_score += 1
-    elif price > ema20_val: buy_score += 0.5
-    if volume_confirmed: buy_score += 0.5
-    if rsi_val < 70: buy_score += 0.5
-
-    if macd_val < signal_val: sell_score += 1
-    if hist_negative: sell_score += 1
-    if macd_death_cross: sell_score += 2
-    if hist_decreasing and hist_positive: sell_score += 1
-    if stoch_k_val > 80 and stoch_d_val > 80: sell_score += 2
-    elif 80 <= stoch_k_val <= 95: sell_score += 1
-    if stoch_death_cross and stoch_k_val > 80: sell_score += 2
-    if stoch_k_val < stoch_d_val: sell_score += 0.5
-    if bearish_trend: sell_score += 1
-    elif price < ema20_val: sell_score += 0.5
-    if rsi_val > 30: sell_score += 0.5
-
-    action = "⏳ WAIT"; signal_type = "HOLD"; signal_strength = 0
-    if buy_score >= 5:
-        if buy_score >= 7 and stoch_golden_cross and macd_golden_cross:
-            signal_type = "⭐⭐⭐ STRONG BUY"; signal_strength = 3; action = "🟢 STRONG BUY"
-        elif buy_score >= 6 and (macd_golden_cross or stoch_golden_cross):
-            signal_type = "⭐⭐ BUY"; signal_strength = 2; action = "🟢 BUY"
-        else:
-            signal_type = "⭐ BUY"; signal_strength = 1; action = "🟢 BUY"
-    elif sell_score >= 5:
-        if sell_score >= 7 and stoch_death_cross and macd_death_cross:
-            signal_type = "⭐⭐⭐ STRONG SELL"; signal_strength = 3; action = "🔴 STRONG SELL"
-        elif sell_score >= 6 and (macd_death_cross or stoch_death_cross):
-            signal_type = "⭐⭐ SELL"; signal_strength = 2; action = "🔴 SELL"
-        else:
-            signal_type = "⭐ SELL"; signal_strength = 1; action = "🔴 SELL"
-    elif stoch_k_val > 85 and hist_decreasing and hist_positive:
-        signal_type = "💰 TAKE PROFIT"; signal_strength = 2; action = "💰 TAKE PROFIT"
+    if buy >= 5:
+        action = "🟢 STRONG BUY" if (buy >= 7 and s_gc and m_gc) else "🟢 BUY"
+    elif sell >= 5:
+        action = "🔴 STRONG SELL" if (sell >= 7 and s_dc and m_dc) else "🔴 SELL"
+    elif k0 > 85 and (not hist_up) and h0 > 0:
+        action = "💰 TAKE PROFIT"
+    elif dif > dea and 20 <= k0 <= 80:
+        action = "🟡 HOLD"
     else:
-        if macd_val > signal_val and 20 <= stoch_k_val <= 80:
-            signal_type = "🟡 HOLD"; action = "🟡 HOLD"
-        elif macd_val > signal_val and stoch_k_val < 20:
-            signal_type = "🟡 WAIT"; action = "⏳ WAIT"
-        elif macd_val < signal_val and stoch_k_val > 80:
-            signal_type = "🟡 WAIT"; action = "⏳ WAIT"
-        else:
-            signal_type = "🟡 HOLD / WAIT"; action = "⏳ WAIT"
+        action = "⏳ WAIT"
 
     return {
-        "symbol": None, "timeframe": timeframe,
-        "action": action, "signal_type": signal_type, "signal_strength": signal_strength,
-        "score": {"buy": buy_score, "sell": sell_score},
-        "macd": {
-            "dif": macd_val, "dea": signal_val, "histogram": hist_val,
-            "histogram_prev": hist_prev, "golden_cross": macd_golden_cross,
-            "death_cross": macd_death_cross, "hist_increasing": hist_increasing,
-            "hist_decreasing": hist_decreasing, "hist_positive": hist_positive,
-            "hist_negative": hist_negative
-        },
-        "stoch": {
-            "k": stoch_k_val, "d": stoch_d_val,
-            "golden_cross": stoch_golden_cross, "death_cross": stoch_death_cross
-        },
-        "rsi": rsi_val, "ema20": ema20_val, "ema50": ema50_val,
-        "price": price, "volume_ratio": volume_ratio,
-        "bullish_trend": bullish_trend, "bearish_trend": bearish_trend,
-        "buy_score": buy_score, "sell_score": sell_score
+        "timeframe": timeframe, "action": action, "price": price,
+        "macd": {"dif": dif, "dea": dea, "hist": h0, "hist_up": hist_up, "golden": m_gc, "death": m_dc},
+        "stoch": {"k": k0, "d": d0, "golden": s_gc, "death": s_dc},
+        "rsi": rsi0, "ema20": e20, "ema50": e50, "adx": float(adx.iloc[-1]) if pd.notna(adx.iloc[-1]) else 0.0,
+        "volume_ratio": vol_ratio, "ema_bull": e20 > e50, "bearish_trend": price < e20 < e50,
+        "buy_score": float(buy), "sell_score": float(sell),
     }
 
-# =========================================================
-# AUTO TRADE PLAN
-# =========================================================
-def generate_trade_plan(df, symbol, timeframe, account_balance=1000.0, risk_pct=2.0):
-    if df is None or len(df) < 50:
-        return None
 
+# =========================================================
+# AUTO TRADE PLAN (long-only)
+# =========================================================
+def _targets(entry, risk, cands):
+    """TP1..TP3 dari level kandidat (min 1R dari entry), fallback kelipatan R."""
+    cands = sorted(x for x in cands if x is not None and x >= entry + risk)
+    tps = []
+    for k, mult in enumerate((1.5, 2.5, 4.0)):
+        tps.append(cands[k] if k < len(cands) else entry + risk * mult)
+    for k in (1, 2):
+        if tps[k] <= tps[k - 1]:
+            tps[k] = tps[k - 1] + risk * 0.75
+    return tps
+
+
+def generate_trade_plan(df, symbol, tf, balance=1000.0, risk_pct=2.0, cfg=None, htf_ok=True, analysis=None):
+    cfg = {**DEFAULT_CFG, **(cfg or {})}
+    if df is None or len(df) < 60:
+        return None
     price = float(df["Close"].iloc[-1])
-    atr_series = get_atr(df, 14)
-    atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else price * 0.02
-    if atr <= 0:
-        atr = price * 0.02
-
-    fib = get_fibonacci(df, lookback=100)
-    buy_side, sell_side = get_liquidity_zones(df, lookback=100)
-    supports, resistances = get_support_resistance(df, lookback=100)
-
-    if not fib:
+    atr_s = ATR(df)
+    atr = float(atr_s.iloc[-1]) if pd.notna(atr_s.iloc[-1]) and atr_s.iloc[-1] > 0 else price * 0.02
+    fib = get_fibonacci(df, 100)
+    analysis = analysis or analyze_macd_stoch(df, tf)
+    if fib is None or analysis is None:
         return None
 
-    fib_236 = fib.get(0.236); fib_382 = fib.get(0.382); fib_5 = fib.get(0.5)
-    fib_618 = fib.get(0.618); fib_786 = fib.get(0.786)
-    swing_high = fib.get("Swing High"); swing_low = fib.get("Swing Low")
+    lv = fib["levels"]
+    f236, f382, f5, f618, f786 = (lv[x] for x in (0.236, 0.382, 0.5, 0.618, 0.786))
+    sh, slow = fib["high"], fib["low"]
+    buy_side, sell_side = get_liquidity_zones(df, 100, 0.5, 3, 3)
+    sup, res = get_support_resistance(df)
+    res_all = sorted(set(res + buy_side))
+    nearest_res = res_all[0] if res_all else None
+    ssl = sell_side[0] if sell_side else None
+    macd, stoch = analysis["macd"], analysis["stoch"]
+    macd_bear = macd["dif"] < macd["dea"] and not macd["hist_up"]
 
-    nearest_ssl = min([s for s in sell_side if s < price], key=lambda x: abs(price - x), default=None)
-    nearest_bsl = min([b for b in buy_side if b > price], key=lambda x: abs(price - x), default=None)
-    nearest_support = supports[0] if supports else None
-    nearest_resistance = resistances[0] if resistances else None
-
-    analysis = analyze_macd_stoch(df, timeframe)
-    vol_ratio = analysis["volume_ratio"] if analysis else 1.0
-
-    def make_wait(reason_text):
-        return {
-            "symbol": symbol, "timeframe": timeframe,
-            "setup_type": "WAIT", "setup_label": reason_text, "setup_class": "setup-wait",
-            "confidence": 0, "entry": price, "stop_loss": price,
-            "tp1": price, "tp2": price, "tp3": price, "rr": 0,
-            "reasons": [f"⚠️ {reason_text}"],
-            "invalidations": ["Tidak ada setup valid = tidak entry"],
-            "atr": atr, "price": price,
-            "dip_level": fib_618, "breakout_level": nearest_resistance,
-            "liq_level": nearest_ssl, "alternatives": [],
-            "account_balance": account_balance, "risk_pct": risk_pct,
-            "max_loss_usd": 0, "units": 0, "position_usd": 0, "profit_tp2_usd": 0,
-            "fib": fib, "nearest_support": nearest_support,
-            "nearest_resistance": nearest_resistance,
-            "signal_type": "WAIT", "signal_strength": 0
-        }
-
-    if vol_ratio < 0.5:
-        return make_wait(f"WAIT — Volume terlalu rendah ({vol_ratio:.2f}x)")
-
-    setup_type = "WAIT"; setup_label = "⏳ WAIT (no clear setup)"; setup_class = "setup-wait"
-    entry = sl = tp1 = tp2 = tp3 = None
-    reasons = []
-    invalidations = []
-    dip_fib_level = None
-
-    near = lambda a, b, pct=1.5: a is not None and b is not None and abs(a - b) / b * 100 < pct
-
-    # Setup A: BUY THE DIP
-    dip_level = None
-    if fib_618 and abs(price - fib_618) / fib_618 * 100 < 5:
-        dip_level = fib_618
-        dip_fib_level = "0.618"
-    elif fib_5 and abs(price - fib_5) / fib_5 * 100 < 3:
-        dip_level = fib_5
-        dip_fib_level = "0.500"
-
-    # Setup B: BREAKOUT
-    breakout_level = None
-    if nearest_resistance and price > nearest_resistance * 0.998:
-        breakout_level = nearest_resistance
-    elif swing_high and price > swing_high * 0.998:
-        breakout_level = swing_high
-
-    # Setup C: LIQUIDITY GRAB
-    liq_level = None
-    if nearest_ssl and abs(price - nearest_ssl) / nearest_ssl * 100 < 2:
-        liq_level = nearest_ssl
-
-    # PRIORITAS SETUP
-    if dip_level:
-        if analysis and analysis["macd"]["dif"] < analysis["macd"]["dea"] * 0.98:
-            return make_wait("WAIT — Harga di Fib dip tapi MACD masih bearish")
-        setup_type = "BUY_THE_DIP"
-        setup_label = f"🅰️ BUY THE DIP (Fib {dip_fib_level})"
-        setup_class = "setup-dip"
-        entry = dip_level
-        sl_candidate = min(fib_786, nearest_ssl) if fib_786 and nearest_ssl else (fib_786 or price - 2 * atr)
-        sl = sl_candidate * 0.997
-        risk = entry - sl
-        tp1 = fib_382 if (fib_382 and fib_382 > entry * 1.005) else entry + risk * 1.5
-        tp2 = fib_236 if (fib_236 and fib_236 > entry * 1.005) else entry + risk * 2.5
-        tp3 = swing_high if (swing_high and swing_high > entry * 1.005) else entry + risk * 4.0
-        reasons.append(f"✅ Harga dekat Fib retracement {dip_fib_level} (${dip_level:.6f})")
-        if fib_618 and fib_5:
-            reasons.append(f"📐 Range: ${swing_high:.6f} − ${swing_low:.6f}")
-            reasons.append(f"📐 Fib 0.618 = ${fib_618:.6f} | Fib 0.5 = ${fib_5:.6f}")
-
-    elif breakout_level:
-        setup_type = "BREAKOUT"
-        setup_label = f"🅱️ BREAKOUT BUY (R ${breakout_level:.6f})"
-        setup_class = "setup-breakout"
-        entry = breakout_level * 1.002
-        sl = max(entry - 2 * atr, (fib_236 or entry - 2 * atr))
-        if sl >= entry:
-            return make_wait("WAIT — SL tidak valid untuk breakout")
-        risk = entry - sl
-        tp1 = entry + risk * 1.5
-        tp2 = entry + risk * 2.5
-        tp3 = entry + risk * 4.0
-        reasons.append(f"✅ Breakout di atas resistance (${breakout_level:.6f})")
-
-    elif liq_level:
-        if analysis and analysis["macd"]["dif"] < analysis["macd"]["dea"]:
-            return make_wait("WAIT — SSL sweep tapi MACD masih bearish")
-        setup_type = "LIQUIDITY_GRAB"
-        setup_label = f"🅲 LIQUIDITY GRAB (SSL ${liq_level:.6f})"
-        setup_class = "setup-liq"
-        entry = liq_level * 1.001
-        sl = (sell_side[1] * 0.998) if len(sell_side) > 1 else (entry - 2 * atr)
-        risk = entry - sl
-        tp1 = fib_5 if (fib_5 and fib_5 > entry * 1.005) else entry + risk * 1.5
-        tp2 = fib_382 if (fib_382 and fib_382 > entry * 1.005) else entry + risk * 2.5
-        tp3 = fib_236 if (fib_236 and fib_236 > entry * 1.005) else entry + risk * 4.0
-        reasons.append(f"✅ Harga sweep SSL (${liq_level:.6f})")
-
-    else:
-        return {
-            "symbol": symbol, "timeframe": timeframe,
-            "setup_type": "WAIT", "setup_label": setup_label, "setup_class": setup_class,
-            "confidence": 0, "entry": price, "stop_loss": price,
-            "tp1": price, "tp2": price, "tp3": price, "rr": 0,
-            "reasons": ["⚠️ Tidak ada setup jelas — harga di tengah range",
-                        f"Harga: ${price:.6f}",
-                        f"Tunggu pullback ke ${fib_618:.6f}" if fib_618 else "",
-                        f"Atau breakout di atas ${nearest_resistance:.6f}" if nearest_resistance else ""],
-            "invalidations": ["Tidak ada setup = tidak entry"],
-            "atr": atr, "price": price,
-            "dip_level": fib_618, "breakout_level": nearest_resistance,
-            "liq_level": nearest_ssl, "alternatives": [],
-            "account_balance": account_balance, "risk_pct": risk_pct,
-            "max_loss_usd": 0, "units": 0, "position_usd": 0, "profit_tp2_usd": 0,
-            "fib": fib, "nearest_support": nearest_support,
-            "nearest_resistance": nearest_resistance,
-            "signal_type": "WAIT", "signal_strength": 0
-        }
-
-    if not entry or not sl or sl >= entry:
-        return make_wait("WAIT — Setup tidak valid (SL >= entry)")
-
-    sl_dist_pct = abs(entry - sl) / entry * 100
-    if sl_dist_pct > 8:
-        return make_wait(f"WAIT — SL terlalu jauh ({sl_dist_pct:.1f}%)")
-
-    if tp1 <= entry or tp2 <= entry or tp3 <= entry:
-        return make_wait("WAIT — TP tidak valid arah")
-
-    risk = entry - sl
-    if risk <= 0:
-        return make_wait("WAIT — Risk <= 0")
-    rr = (tp2 - entry) / risk
-
-    if rr < 1.5:
-        return make_wait(f"WAIT — RR terlalu rendah (1:{rr:.2f}, minimal 1:1.5)")
-
-    confidence = 0
-    if analysis:
-        if analysis["macd"]["dif"] > analysis["macd"]["dea"]:
-            confidence += 1; reasons.append("✅ MACD bullish (DIF > DEA)")
-        elif analysis["macd"]["hist_increasing"]:
-            confidence += 0.5; reasons.append("🟡 MACD histogram mulai naik")
-        if analysis["stoch"]["k"] < 30 and analysis["stoch"]["k"] > analysis["stoch"]["d"]:
-            confidence += 1; reasons.append(f"✅ Stoch oversold + cross up (K={analysis['stoch']['k']:.1f})")
-        elif analysis["stoch"]["k"] < 50 and analysis["stoch"]["k"] > analysis["stoch"]["d"]:
-            confidence += 0.5; reasons.append(f"🟡 Stoch bullish (K={analysis['stoch']['k']:.1f})")
-        if analysis["volume_ratio"] > 1.2:
-            confidence += 1; reasons.append(f"✅ Volume konfirmasi (RVOL {analysis['volume_ratio']:.2f}x)")
-        else:
-            reasons.append(f"⚠️ Volume rendah (RVOL {analysis['volume_ratio']:.2f}x)")
-
-    if nearest_ssl and near(entry, nearest_ssl, 2):
-        confidence += 1; reasons.append(f"✅ Entry konfluen dengan SSL (${nearest_ssl:.6f})")
-    if fib_618 and near(entry, fib_618, 2):
-        confidence += 0.5; reasons.append("✅ Entry di Fib 0.618 (golden ratio)")
-
-    confidence_int = min(5, int(round(confidence)))
-
-    invalidations.append(f"❌ Batal jika harga close < ${sl:.6f} ({timeframe})")
-    if analysis:
-        invalidations.append(f"❌ Batal jika MACD death cross di {timeframe}")
-        invalidations.append(f"❌ Batal jika Stoch K > 80 tanpa momentum")
-
-    # Alternatif
-    alternatives = []
-    if setup_type != "BUY_THE_DIP" and fib_618 and fib_618 < price:
-        alt_sl = (fib_786 * 0.997) if fib_786 else (fib_618 - 2 * atr)
-        alt_risk = fib_618 - alt_sl
-        if alt_risk > 0:
-            alternatives.append({
-                "name": "🅰️ LIMIT BUY (tunggu pullback)",
-                "entry": fib_618, "sl": alt_sl,
-                "tp": fib_382 if (fib_382 and fib_382 > fib_618) else fib_618 + alt_risk * 2,
-                "rr": ((fib_382 - fib_618) / alt_risk) if (fib_382 and fib_382 > fib_618) else 2.0,
-                "note": f"Tunggu harga turun ke Fib 0.618 (${fib_618:.6f})"
-            })
-
-    if setup_type != "BREAKOUT" and nearest_resistance and nearest_resistance > price:
-        bo_entry = nearest_resistance * 1.002
-        bo_sl = max(bo_entry - 2 * atr, (fib_236 or bo_entry - 2 * atr))
-        bo_risk = bo_entry - bo_sl
-        if bo_risk > 0:
-            alternatives.append({
-                "name": "🅱️ BREAKOUT BUY",
-                "entry": bo_entry, "sl": bo_sl,
-                "tp": bo_entry + bo_risk * 2.5, "rr": 2.5,
-                "note": f"Tunggu tembus resistance ${nearest_resistance:.6f} dengan volume"
-            })
-
-    if nearest_ssl and nearest_ssl < price:
-        sc_entry = nearest_ssl * 1.001
-        sc_sl = (sell_side[1] * 0.998) if len(sell_side) > 1 else (sc_entry - 1.5 * atr)
-        sc_risk = sc_entry - sc_sl
-        if sc_risk > 0 and fib_5 and fib_5 > sc_entry:
-            alternatives.append({
-                "name": "🅲 SCALP BUY (di SSL)",
-                "entry": sc_entry, "sl": sc_sl, "tp": fib_5,
-                "rr": (fib_5 - sc_entry) / sc_risk,
-                "note": f"Entry di SSL ${nearest_ssl:.6f}, target Fib 0.5 ${fib_5:.6f}"
-            })
-
-    max_loss_usd = account_balance * (risk_pct / 100)
-    risk_per_unit = entry - sl
-    units = max_loss_usd / risk_per_unit if risk_per_unit > 0 else 0
-    position_usd = units * entry
-    profit_tp2_usd = units * (tp2 - entry)
-
-    if setup_type in ["BUY_THE_DIP", "BREAKOUT", "LIQUIDITY_GRAB"]:
-        if confidence_int >= 4:
-            signal_type = "⭐ STRONG BUY"
-            signal_strength = 3
-        elif confidence_int >= 3:
-            signal_type = "⭐⭐ BUY"
-            signal_strength = 2
-        else:
-            signal_type = "⭐ WEAK BUY"
-            signal_strength = 1
-
-    return {
-        "symbol": symbol, "timeframe": timeframe,
-        "setup_type": setup_type, "setup_label": setup_label, "setup_class": setup_class,
-        "confidence": confidence_int,
-        "entry": float(entry), "stop_loss": float(sl),
-        "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3),
-        "rr": float(rr),
-        "reasons": [r for r in reasons if r],
-        "invalidations": invalidations,
-        "atr": atr, "price": price,
-        "dip_level": dip_level if dip_level else fib_618,
-        "dip_fib_level": dip_fib_level,
-        "breakout_level": nearest_resistance,
-        "liq_level": nearest_ssl,
-        "alternatives": alternatives,
-        "account_balance": account_balance, "risk_pct": risk_pct,
-        "max_loss_usd": max_loss_usd, "units": units,
-        "position_usd": position_usd, "profit_tp2_usd": profit_tp2_usd,
-        "fib": fib, "nearest_support": nearest_support,
-        "nearest_resistance": nearest_resistance,
-        "signal_type": signal_type, "signal_strength": signal_strength,
-        "swing_high": swing_high, "swing_low": swing_low,
+    base = {
+        "symbol": symbol, "timeframe": tf, "price": price, "atr": atr, "fib": fib, "analysis": analysis,
+        "account_balance": balance, "risk_pct": risk_pct,
+        "nearest_support": sup[0] if sup else None, "nearest_resistance": nearest_res,
+        "dip_level": f618 if fib["trend"] == "up" else None, "breakout_level": nearest_res,
+        "liq_level": ssl, "swing_high": sh, "swing_low": slow,
     }
 
-# =========================================================
-# MTF SYNCED
-# =========================================================
-def analyze_mtf_synced(symbol, timeframes=["15m", "1h", "4h"]):
-    results = {}
-    for tf in timeframes:
-        df = get_data_safe(symbol, tf, min_candles=80)
-        if df is None:
-            continue
-        plan = generate_trade_plan(df, symbol, tf)
-        analysis = analyze_macd_stoch(df, tf)
-        if plan is None or analysis is None:
-            continue
-        results[tf] = {"plan": plan, "analysis": analysis, "df": df}
+    def wait(reason):
+        return {**base, "setup_type": "WAIT", "setup_label": f"⏳ WAIT — {reason}", "setup_class": "setup-wait",
+                "confidence": 0, "entry": price, "stop_loss": price, "tp1": price, "tp2": price, "tp3": price,
+                "rr": 0.0, "reasons": [f"⚠️ {reason}"], "invalidations": ["Tidak ada setup valid = tidak entry"],
+                "alternatives": [], "max_loss_usd": 0, "units": 0, "position_usd": 0, "profit_tp2_usd": 0,
+                "order_type": "-", "signal_type": "WAIT", "signal_strength": 0}
 
-    if not results:
-        return None
+    if cfg["use_htf"] and not htf_ok:
+        return wait("Tren TF lebih besar bearish (filter HTF)")
+    if analysis["volume_ratio"] < cfg["min_vol"]:
+        return wait(f"Volume terlalu rendah ({analysis['volume_ratio']:.2f}x)")
 
-    combined = {"symbol": symbol, "timeframes": results}
+    dip = None
+    if fib["trend"] == "up":
+        if f618 * 0.99 <= price <= f618 * 1.05:
+            dip = ("0.618", f618)
+        elif f5 * 0.99 <= price <= f5 * 1.03:
+            dip = ("0.500", f5)
+    bo = None
+    if nearest_res and price >= nearest_res * 0.995:
+        bo = nearest_res
+    elif price >= sh * 0.995:
+        bo = sh
+    liq = ssl if (ssl and price <= ssl * 1.02) else None
 
-    buy_count = 0; sell_count = 0; wait_count = 0
-    for tf in ["4h", "1h", "15m"]:
-        if tf in results:
-            plan = results[tf]["plan"]
-            st_type = plan["setup_type"]
-            if st_type in ["BUY_THE_DIP", "BREAKOUT", "LIQUIDITY_GRAB"]:
-                buy_count += 1
-            elif st_type == "WAIT":
-                wait_count += 1
-
-    if buy_count >= 2:
-        main_signal = "🟢 STRONG BUY (Multi TF)"
-        main_strength = 3
-    elif buy_count == 1 and wait_count >= 1:
-        main_signal = "🟢 BUY"
-        main_strength = 2
-    elif sell_count >= 2:
-        main_signal = "🔴 STRONG SELL (Multi TF)"
-        main_strength = 3
+    reasons, setup = [], None
+    if dip:
+        if macd_bear:
+            return wait("Harga di zona Fib tapi MACD masih bearish")
+        name, lvl = dip
+        setup, label, cls = "BUY_THE_DIP", f"🅰️ BUY THE DIP (Fib {name})", "setup-dip"
+        entry = min(lvl, price)
+        base_sl = f786 if f786 < entry else entry - 2 * atr
+        sl = min(base_sl * 0.997, entry - 1.2 * atr)
+        risk = entry - sl
+        tp1, tp2, tp3 = _targets(entry, risk, [f382, f236, sh])
+        reasons += [f"✅ Harga dekat Fib {name} ({lvl:.6f}) pada uptrend swing",
+                    f"📐 Range swing: {sh:.6f} − {slow:.6f}"]
+    elif bo:
+        if macd_bear or analysis["volume_ratio"] < 1.0:
+            return wait("Dekat resistance tapi belum ada konfirmasi MACD/volume")
+        setup, label, cls = "BREAKOUT", f"🅱️ BREAKOUT BUY (R {bo:.6f})", "setup-breakout"
+        entry = bo * 1.002
+        sl = entry - 1.5 * atr
+        risk = entry - sl
+        tp1, tp2, tp3 = entry + risk * 1.5, entry + risk * 2.5, entry + risk * 4.0
+        reasons.append(f"✅ Buy-stop di atas resistance ({bo:.6f}) dengan konfirmasi volume")
+    elif liq:
+        if macd_bear or stoch["k"] > 60:
+            return wait("Dekat SSL tapi momentum belum mendukung")
+        setup, label, cls = "LIQUIDITY_GRAB", f"🅲 LIQUIDITY GRAB (SSL {liq:.6f})", "setup-liq"
+        entry = min(liq * 1.003, price)
+        sl = liq - 1.0 * atr
+        risk = entry - sl
+        tp1, tp2, tp3 = _targets(entry, risk, list(lv.values()) + [sh])
+        reasons.append(f"✅ Harga di zona SSL ({liq:.6f}), potensi sweep & bounce")
     else:
-        main_signal = "🟡 HOLD / WAIT"
-        main_strength = 1
+        return wait("Tidak ada setup — harga di tengah range")
 
-    best_plan = None
-    best_conf = -1
-    for tf in ["4h", "1h", "15m"]:
-        if tf in results:
-            p = results[tf]["plan"]
-            if p["confidence"] > best_conf and p["setup_type"] != "WAIT":
-                best_conf = p["confidence"]
-                best_plan = p
+    if sl >= entry or (entry - sl) <= 0:
+        return wait("Setup tidak valid (SL >= entry)")
+    sl_pct = (entry - sl) / entry * 100
+    if sl_pct > cfg["max_sl_pct"]:
+        return wait(f"SL terlalu jauh ({sl_pct:.1f}%)")
+    rr = (tp2 - entry) / (entry - sl)
+    if rr < cfg["min_rr"]:
+        return wait(f"RR terlalu rendah (1:{rr:.2f}, minimal 1:{cfg['min_rr']})")
 
-    combined.update({
-        "main_signal": main_signal, "main_strength": main_strength,
-        "buy_count": buy_count, "sell_count": sell_count, "wait_count": wait_count,
-        "best_plan": best_plan,
-        "total_score": 50 + (buy_count * 12) if buy_count > 0 else 50,
-        "confirmations": buy_count + sell_count,
-    })
-    return combined
+    # ---- confidence ----
+    conf = 0.0
+    if macd["dif"] > macd["dea"]:
+        conf += 1; reasons.append("✅ MACD bullish (DIF > DEA)")
+    elif macd["hist_up"]:
+        conf += 0.5; reasons.append("🟡 Histogram MACD mulai naik")
+    if stoch["k"] < 30 and stoch["k"] > stoch["d"]:
+        conf += 1; reasons.append(f"✅ StochRSI oversold + cross up (K={stoch['k']:.1f})")
+    elif stoch["k"] < 50 and stoch["k"] > stoch["d"]:
+        conf += 0.5; reasons.append(f"🟡 StochRSI bullish (K={stoch['k']:.1f})")
+    if analysis["volume_ratio"] > 1.2:
+        conf += 1; reasons.append(f"✅ Volume konfirmasi (RVOL {analysis['volume_ratio']:.2f}x)")
+    else:
+        reasons.append(f"⚠️ Volume biasa (RVOL {analysis['volume_ratio']:.2f}x)")
+    if ssl and abs(entry - ssl) / ssl * 100 < 2:
+        conf += 1; reasons.append(f"✅ Entry konfluen dengan SSL ({ssl:.6f})")
+    if abs(entry - f618) / f618 * 100 < 2:
+        conf += 0.5; reasons.append("✅ Entry di Fib 0.618 (golden ratio)")
+    if htf_ok and HTF_OF.get(tf):
+        conf += 0.5; reasons.append(f"✅ Searah tren {HTF_OF[tf]} (EMA20 > EMA50)")
+    reasons.append(f"ℹ️ ADX {analysis['adx']:.1f} ({'trending' if analysis['adx'] >= 20 else 'sideways/lemah'})")
+    conf_i = min(5, int(conf + 0.5))
 
-# =========================================================
-# FORMAT PLAN TELEGRAM — VERSI DETAIL
-# =========================================================
-def format_plan_for_telegram(plan):
-    """Format Auto Trade Plan untuk Telegram — versi aman (escape HTML)."""
-    def esc(s):
-        return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    invalidations = [f"❌ Batal jika candle {tf} close < {sl:.6f}",
+                     f"❌ Batal jika MACD death cross di {tf}",
+                     "❌ Batal jika entry belum terisi dalam ±8 candle"]
 
-    entry = plan["entry"]
-    sl = plan["stop_loss"]
-    tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
-    setup_type = plan["setup_type"]
+    # ---- skenario alternatif ----
+    alts = []
+    if setup != "BUY_THE_DIP" and fib["trend"] == "up" and f618 < price:
+        a_sl = min(f786 * 0.997, f618 - 1.2 * atr)
+        a_risk = f618 - a_sl
+        if a_risk > 0:
+            a_tp = f382 if f382 > f618 + a_risk else f618 + a_risk * 2
+            alts.append({"name": "🅰️ LIMIT BUY (tunggu pullback)", "entry": f618, "sl": a_sl, "tp": a_tp,
+                         "rr": (a_tp - f618) / a_risk, "note": f"Tunggu harga turun ke Fib 0.618 ({f618:.6f})"})
+    if setup != "BREAKOUT" and nearest_res and nearest_res > price:
+        b_entry = nearest_res * 1.002
+        b_risk = 1.5 * atr
+        alts.append({"name": "🅱️ BREAKOUT BUY", "entry": b_entry, "sl": b_entry - b_risk,
+                     "tp": b_entry + b_risk * 2.5, "rr": 2.5,
+                     "note": f"Tunggu tembus resistance {nearest_res:.6f} dengan volume"})
 
-    sl_pct = (sl / entry - 1) * 100
-    tp1_pct = (tp1 / entry - 1) * 100
-    tp2_pct = (tp2 / entry - 1) * 100
-    tp3_pct = (tp3 / entry - 1) * 100
+    max_loss = balance * risk_pct / 100
+    units = max_loss / (entry - sl)
+    order_type = "MARKET" if abs(entry - price) / price < 0.002 else ("LIMIT" if entry < price else "STOP")
+    signal_type = "STRONG BUY" if conf_i >= 4 else ("BUY" if conf_i >= 3 else "WEAK BUY")
 
-    txt = f"🎯 <b>AUTO TRADE PLAN</b>\n"
-    txt += f"<b>{esc(plan['symbol'])}</b> · {esc(plan['timeframe'])}\n"
-    txt += f"{esc(plan['setup_label'])}\n"
-    txt += f"Confidence: {'⭐' * plan['confidence']} ({plan['confidence']}/5)\n\n"
+    return {
+        **base, "setup_type": setup, "setup_label": label, "setup_class": cls, "confidence": conf_i,
+        "entry": float(entry), "stop_loss": float(sl), "tp1": float(tp1), "tp2": float(tp2), "tp3": float(tp3),
+        "rr": float(rr), "reasons": reasons, "invalidations": invalidations, "alternatives": alts,
+        "max_loss_usd": max_loss, "units": units, "position_usd": units * entry,
+        "profit_tp2_usd": units * (tp2 - entry), "order_type": order_type,
+        "signal_type": signal_type, "signal_strength": 3 if conf_i >= 4 else (2 if conf_i >= 3 else 1),
+    }
 
-    if setup_type == "BUY_THE_DIP":
-        fib = plan.get("fib", {})
-        fib_618 = fib.get(0.618, 0)
-        fib_5 = fib.get(0.5, 0)
-        swing_high = plan.get("swing_high", 0) or fib.get("Swing High", 0)
-        swing_low = plan.get("swing_low", 0) or fib.get("Swing Low", 0)
-        dip_lvl = plan.get("dip_fib_level", "0.618")
 
-        txt += f"📐 <b>FIBONACCI SETUP</b>\n"
-        txt += f"Swing High: ${swing_high:.6f}\n"
-        txt += f"Swing Low:  ${swing_low:.6f}\n"
-        txt += f"Fib 0.5:    ${fib_5:.6f}\n"
-        txt += f"Fib 0.618:  ${fib_618:.6f}\n"
-        txt += f"→ Entry di Fib {esc(dip_lvl)}: <b>${entry:.6f}</b>\n\n"
+def is_valid_plan(plan, cfg):
+    return bool(plan and plan["setup_type"] in VALID_SETUPS and plan["confidence"] >= cfg["min_conf"]
+                and plan["rr"] >= cfg["min_rr"])
 
-    elif setup_type == "LIQUIDITY_GRAB":
-        ssl = plan.get("liq_level", 0)
-        txt += f"💧 <b>LIQUIDITY GRAB (SSL Sweep)</b>\n"
-        txt += f"SSL Level: <b>${ssl:.6f}</b>\n"
-        txt += f"→ Harga sweep SSL, potensi bounce\n\n"
-
-    elif setup_type == "BREAKOUT":
-        res = plan.get("breakout_level", 0)
-        txt += f"🚀 <b>BREAKOUT SETUP</b>\n"
-        txt += f"Resistance: <b>${res:.6f}</b>\n"
-        txt += f"→ Harga tembus resistance\n\n"
-
-    txt += f"📊 <b>LEVEL TRADING</b>\n"
-    txt += f"🎯 Entry: <b>${entry:.6f}</b>\n"
-    txt += f"🛑 SL:    <b>${sl:.6f}</b> ({sl_pct:+.2f}%)\n"
-    txt += f"🥇 TP1:   <b>${tp1:.6f}</b> ({tp1_pct:+.2f}%)\n"
-    txt += f"🥈 TP2:   <b>${tp2:.6f}</b> ({tp2_pct:+.2f}%)\n"
-    txt += f"🥉 TP3:   <b>${tp3:.6f}</b> ({tp3_pct:+.2f}%)\n"
-    txt += f"📊 R:R:   1 : {plan['rr']:.2f}\n\n"
-
-    txt += f"💰 <b>POSITION SIZING</b>\n"
-    txt += f"Modal: ${plan['account_balance']:.2f}\n"
-    txt += f"Risk: {plan['risk_pct']:.1f}% = ${plan['max_loss_usd']:.2f}\n"
-    txt += f"Position: <b>${plan['position_usd']:.2f}</b>\n"
-    txt += f"Units: <b>{plan['units']:.6f}</b>\n\n"
-
-    txt += f"🧠 <b>ALASAN:</b>\n"
-    for r in plan['reasons'][:6]:
-        txt += f"{esc(r)}\n"
-    txt += "\n"
-
-    txt += f"⚠️ <b>INVALIDASI:</b>\n"
-    for i in plan['invalidations'][:3]:
-        txt += f"{esc(i)}\n"
-    txt += "\n"
-
-    if plan.get("alternatives"):
-        txt += f"📋 <b>SKENARIO ALTERNATIF:</b>\n"
-        for alt in plan['alternatives'][:2]:
-            txt += f"• {esc(alt['name'])}\n"
-            txt += f"  Entry: ${alt['entry']:.6f}\n"
-            txt += f"  SL: ${alt['sl']:.6f} · TP: ${alt['tp']:.6f}\n"
-            txt += f"  R:R 1:{alt['rr']:.2f}\n"
-        txt += "\n"
-
-    txt += f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-
-    # Potong kalau terlalu panjang
-    if len(txt) > 4000:
-        txt = txt[:3900] + "\n\n[...dipotong...]"
-
-    return txt 
 
 # =========================================================
-# CHART
+# MULTI TIMEFRAME
 # =========================================================
-def create_chart(df, symbol, timeframe, plan=None,
-                 show_fib=True, show_liquidity=True, show_sr=True, show_plan=True):
-    if df is None or len(df) < 30:
-        return None
+def analyze_mtf(symbol, cfg, balance, risk_pct):
+    def _run():
+        data = {}
+        for tf in TIMEFRAMES:
+            df = get_data(symbol, tf, 500)
+            if df is None or len(df) < 80:
+                continue
+            a = analyze_macd_stoch(df, tf)
+            if a:
+                data[tf] = (df, a)
+        if not data:
+            return None
+        results = {}
+        for tf, (df, a) in data.items():
+            h = HTF_OF.get(tf)
+            htf_ok = True if (h is None or h not in data) else bool(data[h][1]["ema_bull"])
+            plan = generate_trade_plan(df, symbol, tf, balance, risk_pct, cfg, htf_ok, a)
+            if plan:
+                results[tf] = {"plan": plan, "analysis": a}
+        if not results:
+            return None
 
-    macd_line, signal_line, histogram = MACD(df)
-    stoch_k, stoch_d, rsi = StochasticRSI(df)
-    ema20 = EMA(df, 20); ema50 = EMA(df, 50)
+        valid = [tf for tf in ("4h", "1h", "15m") if tf in results and is_valid_plan(results[tf]["plan"], cfg)]
+        best, best_c = None, -1
+        for tf in valid:  # 4h, 1h, 15m: tie-break ke TF lebih besar
+            if results[tf]["plan"]["confidence"] > best_c:
+                best_c, best = results[tf]["plan"]["confidence"], results[tf]["plan"]
+        if len(valid) >= 2:
+            main, strength = "🟢 STRONG BUY (Multi TF)", 3
+        elif len(valid) == 1:
+            main, strength = "🟢 BUY", 2
+        elif all(r["analysis"]["bearish_trend"] for r in results.values()):
+            main, strength = "🔴 BEARISH (hindari long)", 1
+        else:
+            main, strength = "🟡 WAIT", 1
+        return {"symbol": symbol, "timeframes": results, "main_signal": main, "main_strength": strength,
+                "buy_count": len(valid), "best_plan": best}
 
-    fib = get_fibonacci(df, lookback=100) if show_fib else {}
-    buy_side, sell_side = get_liquidity_zones(df, lookback=100) if show_liquidity else ([], [])
-    sr_support, sr_resistance = get_support_resistance(df, lookback=100) if show_sr else ([], [])
+    key = ("mtf", symbol, json.dumps(cfg, sort_keys=True), balance, risk_pct)
+    return _cached(key, 60, _run)
 
-    fig = make_subplots(
-        rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-        row_heights=[0.35, 0.2, 0.25, 0.2],
-        subplot_titles=(f"Price - {symbol} {timeframe}", "RSI", "MACD", "Stochastic RSI")
-    )
 
-    fig.add_trace(go.Candlestick(
-        x=df["Time"], open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
-        increasing_line_color="#00ff88", decreasing_line_color="#ff3b5c", name="Price"
-    ), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=ema20,
-        line=dict(color="#00a2ff", width=1.5), name="EMA20"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=ema50,
-        line=dict(color="#ffaa00", width=1.5, dash="dash"), name="EMA50"), row=1, col=1)
+# =========================================================
+# SIMULASI TRADE (dipakai backtest & tracker live)
+# Model: entry terisi saat harga menyentuh entry; 50% keluar di TP1 lalu SL geser ke BE;
+# sisa 50% ke TP2. Dalam satu candle, SL dianggap kena lebih dulu (konservatif).
+# =========================================================
+def simulate_trade(fut, entry, sl, tp1, tp2, fill_window=None, max_hold=None, fee_pct=0.2, force_close=False):
+    risk = entry - sl
+    if risk <= 0 or len(fut) == 0:
+        return {"status": "INVALID", "r": 0.0, "filled": False, "bars": 0}
+    cost = entry * fee_pct / 100 / risk
+    H, L, C = fut["High"].to_numpy(), fut["Low"].to_numpy(), fut["Close"].to_numpy()
+    r1, r2 = (tp1 - entry) / risk, (tp2 - entry) / risk
+    filled, fill_i, stage, locked, timed_out = False, 0, 1, 0.0, False
+    last = len(H) - 1
+    for i in range(len(H)):
+        last = i
+        if not filled:
+            if fill_window is not None and i >= fill_window:
+                return {"status": "NOT_FILLED", "r": 0.0, "filled": False, "bars": i}
+            if L[i] <= entry <= H[i]:
+                filled, fill_i = True, i
+                if L[i] <= sl:
+                    return {"status": "LOSS", "r": -1 - cost, "filled": True, "bars": i + 1}
+            continue
+        if max_hold is not None and i - fill_i > max_hold:
+            timed_out = True
+            break
+        if stage == 1:
+            if L[i] <= sl:
+                return {"status": "LOSS", "r": -1 - cost, "filled": True, "bars": i + 1}
+            if H[i] >= tp1:
+                stage, locked = 2, 0.5 * r1
+        else:
+            if L[i] <= entry:
+                return {"status": "WIN", "r": locked - cost, "filled": True, "bars": i + 1}
+            if H[i] >= tp2:
+                return {"status": "WIN", "r": locked + 0.5 * r2 - cost, "filled": True, "bars": i + 1}
+    if not filled:
+        if force_close:
+            return {"status": "NOT_FILLED", "r": 0.0, "filled": False, "bars": len(H)}
+        return {"status": "PENDING", "r": 0.0, "filled": False, "bars": len(H)}
+    mtm = (C[last] - entry) / risk
+    r = locked + (0.5 if stage == 2 else 1.0) * mtm - cost
+    return {"status": "TIMEOUT" if (force_close or timed_out) else "RUNNING", "r": r, "filled": True, "bars": last + 1}
 
-    if show_fib and fib:
-        fib_colors = {0.236: "rgba(255,255,255,0.35)", 0.382: "rgba(255,215,0,0.55)",
-                      0.5: "rgba(255,140,0,0.55)", 0.618: "rgba(0,200,255,0.65)",
-                      0.786: "rgba(168,85,247,0.65)"}
-        for level, price_lvl in fib.items():
-            if isinstance(level, str):
-                fig.add_hline(y=price_lvl, line_dash="dot",
-                    line_color="rgba(148,163,184,0.5)", line_width=1,
-                    annotation_text=f"  Fib {level}", annotation_position="right",
-                    annotation_font=dict(size=9, color="#94a3b8"), row=1, col=1)
-            else:
-                color = fib_colors.get(level, "rgba(255,255,255,0.3)")
-                fig.add_hline(y=price_lvl, line_dash="dash", line_color=color, line_width=1,
-                    annotation_text=f"  Fib {level:.3f}", annotation_position="right",
-                    annotation_font=dict(size=9, color=color), row=1, col=1)
 
-    if show_liquidity:
-        for lvl in buy_side[:3]:
-            fig.add_hline(y=lvl, line_dash="solid", line_color="rgba(0,255,136,0.35)", line_width=1,
-                annotation_text="  💧 BSL", annotation_position="left",
-                annotation_font=dict(size=9, color="#00ff88"), row=1, col=1)
-            fig.add_hrect(y0=lvl*0.998, y1=lvl*1.002,
-                fillcolor="rgba(0,255,136,0.06)", line_width=0, row=1, col=1)
-        for lvl in sell_side[:3]:
-            fig.add_hline(y=lvl, line_dash="solid", line_color="rgba(255,59,92,0.35)", line_width=1,
-                annotation_text="  💧 SSL", annotation_position="left",
-                annotation_font=dict(size=9, color="#ff3b5c"), row=1, col=1)
-            fig.add_hrect(y0=lvl*0.998, y1=lvl*1.002,
-                fillcolor="rgba(255,59,92,0.06)", line_width=0, row=1, col=1)
+def perf_stats(rs):
+    rs = pd.Series(rs, dtype=float).dropna()
+    if rs.empty:
+        return dict(n=0, wins=0, losses=0, win_rate=0.0, avg_r=0.0, pf=0.0, total_r=0.0, max_dd=0.0)
+    wins, losses = rs[rs > 0], rs[rs <= 0]
+    gl = abs(losses.sum())
+    pf = wins.sum() / gl if gl > 0 else (float("inf") if wins.sum() > 0 else 0.0)
+    cum = rs.cumsum()
+    dd = float((cum - np.maximum(cum.cummax(), 0)).min())
+    return dict(n=len(rs), wins=len(wins), losses=len(losses), win_rate=len(wins) / len(rs) * 100,
+                avg_r=float(rs.mean()), pf=float(pf), total_r=float(rs.sum()), max_dd=dd)
 
-    if show_sr:
-        for lvl in sr_resistance[:2]:
-            fig.add_hline(y=lvl, line_dash="longdash", line_color="rgba(255,100,100,0.45)", line_width=1.2,
-                annotation_text=f"  R {format_price(lvl)}", annotation_position="right",
-                annotation_font=dict(size=9, color="#ff6464"), row=1, col=1)
-        for lvl in sr_support[:2]:
-            fig.add_hline(y=lvl, line_dash="longdash", line_color="rgba(100,255,100,0.45)", line_width=1.2,
-                annotation_text=f"  S {format_price(lvl)}", annotation_position="right",
-                annotation_font=dict(size=9, color="#64ff64"), row=1, col=1)
 
-    if show_plan and plan and plan.get("setup_type") not in [None, "WAIT"]:
-        entry = plan["entry"]; sl = plan["stop_loss"]
-        tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
-        fig.add_hline(y=entry, line_dash="solid", line_color="#00c8ff", line_width=2,
-            annotation_text=f"  🎯 ENTRY ${entry:.6f}", annotation_position="left",
-            annotation_font=dict(size=11, color="#00c8ff"), row=1, col=1)
-        fig.add_hline(y=sl, line_dash="solid", line_color="#ff3b5c", line_width=2,
-            annotation_text=f"  🛑 SL ${sl:.6f}", annotation_position="left",
-            annotation_font=dict(size=11, color="#ff3b5c"), row=1, col=1)
-        for tp, label, col in [(tp1, "TP1", "#00ff88"), (tp2, "TP2", "#00ff88"), (tp3, "TP3", "#00ff88")]:
-            fig.add_hline(y=tp, line_dash="dot", line_color=col, line_width=1.5,
-                annotation_text=f"  🎯 {label} ${tp:.6f}", annotation_position="left",
-                annotation_font=dict(size=10, color=col), row=1, col=1)
-        fig.add_hrect(y0=min(entry, sl), y1=max(entry, sl),
-            fillcolor="rgba(255,59,92,0.08)", line_width=0, row=1, col=1)
-        fig.add_hrect(y0=min(entry, tp2), y1=max(entry, tp2),
-            fillcolor="rgba(0,255,136,0.06)", line_width=0, row=1, col=1)
+def fmt_pf(pf):
+    return "∞" if pf == float("inf") else f"{pf:.2f}"
 
-    fig.add_trace(go.Scatter(x=df["Time"], y=rsi,
-        line=dict(color="#a855f7", width=2), name="RSI"), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-
-    fig.add_trace(go.Scatter(x=df["Time"], y=macd_line,
-        line=dict(color="#00a2ff", width=1.5), name="DIF"), row=3, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=signal_line,
-        line=dict(color="#ff00ff", width=1.5), name="DEA"), row=3, col=1)
-    colors = ["#00ff88" if h >= 0 else "#ff3b5c" for h in histogram]
-    fig.add_trace(go.Bar(x=df["Time"], y=histogram,
-        marker_color=colors, opacity=0.5, name="Histogram"), row=3, col=1)
-    fig.add_hline(y=0, line_dash="solid", line_color="rgba(255,255,255,0.2)", row=3, col=1)
-
-    fig.add_trace(go.Scatter(x=df["Time"], y=stoch_k,
-        line=dict(color="#ffaa00", width=1.5), name="Stoch K"), row=4, col=1)
-    fig.add_trace(go.Scatter(x=df["Time"], y=stoch_d,
-        line=dict(color="#ff00ff", width=1.5, dash="dash"), name="Stoch D"), row=4, col=1)
-    fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
-    fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
-
-    fig.update_layout(
-        template="plotly_dark", height=900,
-        title=dict(text=f"<b>{symbol} - {timeframe} Analysis</b>",
-            font=dict(color="#f1f5f9", size=20), x=0.5, xanchor="center"),
-        hovermode="x unified", dragmode="pan", xaxis_rangeslider_visible=False,
-        paper_bgcolor="#0a0a1a", plot_bgcolor="#0a0a1a", font=dict(color="#94a3b8"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                    xanchor="right", x=1, font=dict(size=10)),
-        margin=dict(l=10, r=10, t=50, b=10)
-    )
-    fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
-    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
-    return fig
 
 # =========================================================
 # BACKTEST
 # =========================================================
-def backtest_trade_plan(df, symbol, horizon=20, min_conf=2):
-    if df is None or len(df) < 250:
+def backtest_trade_plan(df, symbol, tf, cfg, horizon=24, fill_window=8, step=2, min_conf=3):
+    if df is None or len(df) < 300:
         return pd.DataFrame(), {}
-
-    rows = []
-    for i in range(150, len(df) - horizon - 1):
-        window = df.iloc[:i+1]
+    rows, i, n = [], 150, len(df)
+    while i < n - 3:
+        window = df.iloc[:i + 1]
+        htf_ok = True
+        rule = HTF_RULE_FOR_BACKTEST.get(tf)
+        if cfg["use_htf"] and rule:
+            h = resample_ohlc(window, rule)
+            if len(h) >= 55:
+                htf_ok = bool(EMA(h["Close"], 20).iloc[-1] > EMA(h["Close"], 50).iloc[-1])
         try:
-            plan = generate_trade_plan(window, symbol, "backtest")
-        except:
-            continue
-        if not plan or plan["setup_type"] == "WAIT" or plan["confidence"] < min_conf:
-            continue
-        entry = plan["entry"]; sl = plan["stop_loss"]; tp1 = plan["tp1"]
-        future = df.iloc[i+1:i+1+horizon]
-        if len(future) == 0:
-            continue
-        hit_tp1 = (future["High"] >= tp1).any()
-        hit_sl = (future["Low"] <= sl).any()
-        if hit_tp1 and hit_sl:
-            outcome = "AMBIGUOUS"
-        elif hit_tp1:
-            outcome = "WIN"
-        elif hit_sl:
-            outcome = "LOSS"
+            plan = generate_trade_plan(window, symbol, tf, cfg=cfg, htf_ok=htf_ok)
+        except Exception as e:
+            log.warning("bt plan: %s", e)
+            plan = None
+        if plan and plan["setup_type"] in VALID_SETUPS and plan["confidence"] >= min_conf and plan["rr"] >= cfg["min_rr"]:
+            fut = df.iloc[i + 1:i + 1 + fill_window + horizon]
+            if len(fut) < 2:
+                break
+            sim = simulate_trade(fut, plan["entry"], plan["stop_loss"], plan["tp1"], plan["tp2"],
+                                 fill_window, horizon, cfg["fee_pct"], force_close=True)
+            rows.append({"Date": df["Time"].iloc[i], "Setup": plan["setup_type"], "Conf": plan["confidence"],
+                         "Order": plan["order_type"], "Entry": plan["entry"], "SL": plan["stop_loss"],
+                         "TP1": plan["tp1"], "TP2": plan["tp2"], "RR": plan["rr"],
+                         "Status": sim["status"], "R": sim["r"], "Filled": sim["filled"]})
+            i += max(step, sim["bars"] + 1)
         else:
-            outcome = "OPEN"
-        rows.append({
-            "Date": df["Time"].iloc[i],
-            "Setup": plan["setup_type"],
-            "Conf": plan["confidence"],
-            "Entry": entry, "SL": sl, "TP1": tp1,
-            "RR": plan["rr"], "Outcome": outcome,
-            "Max Gain %": (future["High"].max() / entry - 1) * 100,
-            "Max DD %": (future["Low"].min() / entry - 1) * 100
-        })
-
+            i += step
     bt = pd.DataFrame(rows)
     if bt.empty:
         return bt, {}
-    valid = bt[bt.Outcome.isin(["WIN", "LOSS"])]
-    stats = {
-        "signals": len(bt),
-        "wins": int((valid.Outcome == "WIN").sum()) if len(valid) else 0,
-        "losses": int((valid.Outcome == "LOSS").sum()) if len(valid) else 0,
-        "win_rate": float((valid.Outcome == "WIN").mean() * 100) if len(valid) else 0.0,
-        "avg_gain": float(bt["Max Gain %"].mean()),
-        "avg_dd": float(bt["Max DD %"].mean()),
-    }
+    filled = bt[bt["Filled"]]
+    stats = perf_stats(filled["R"].tolist())
+    stats["signals"] = len(bt)
+    stats["fill_rate"] = len(filled) / len(bt) * 100
     return bt, stats
 
+
 # =========================================================
-# RENDER TRADE PLAN
+# TRACKER (paper trading) — update status sinyal aktif
 # =========================================================
-def render_trade_plan(plan, df, symbol, timeframe, account_balance, risk_pct):
+def update_active_signals(send_tg=False):
+    changed = 0
+    for row in get_active_signals():
+        try:
+            ts = pd.to_datetime(row["timestamp"])
+            df = get_data(row["symbol"], "15m", 1000)
+            if df is None:
+                continue
+            fut = df[df["Time"] > ts]
+            if fut.empty:
+                continue
+            sim = simulate_trade(fut, row["entry"], row["sl"], row["tp1"], row["tp2"],
+                                 fill_window=192, max_hold=672, fee_pct=DEFAULT_CFG["fee_pct"])
+            new = {"PENDING": "OPEN", "RUNNING": "FILLED", "NOT_FILLED": "EXPIRED"}.get(sim["status"], sim["status"])
+            if new == row.get("status"):
+                continue
+            fields = {"status": new}
+            if new in ("WIN", "LOSS", "TIMEOUT", "EXPIRED"):
+                fields.update({"result_r": round(float(sim["r"]), 3), "closed_at": utcnow().isoformat()})
+            if update_signal(row["id"], fields):
+                changed += 1
+                if send_tg and new in ("WIN", "LOSS", "TIMEOUT"):
+                    icon = {"WIN": "✅", "LOSS": "🛑", "TIMEOUT": "⌛"}[new]
+                    send_telegram(f"{icon} <b>{esc(row['symbol'])}</b> {esc(row.get('timeframe', ''))} "
+                                  f"{esc(row.get('signal', ''))}\nHasil: <b>{new}</b> ({sim['r']:+.2f}R)")
+        except Exception as e:
+            log.warning("update_active_signals: %s", e)
+    return changed
+
+
+def process_alerts(results, cfg, send_tg):
+    sent = 0
+    for sym, res in results.items():
+        bp = res.get("best_plan") if res else None
+        if not bp or not is_valid_plan(bp, cfg):
+            continue
+        if already_alerted(sym, bp["setup_type"], cfg["cooldown_min"]):
+            continue
+        save_signal(plan_to_row(bp))
+        st.session_state.alert_times[(sym, bp["setup_type"])] = utcnow()
+        if send_tg:
+            ok, err = send_telegram(format_plan_for_telegram(bp))
+            if not ok:
+                log.warning("telegram: %s", err)
+        sent += 1
+    return sent
+
+
+# =========================================================
+# CHART
+# =========================================================
+def create_chart(df, symbol, tf, plan=None, show_fib=True, show_liq=True, show_sr=True, show_plan=True):
+    if df is None or len(df) < 30:
+        return None
+    close = df["Close"]
+    macd_l, macd_s, hist = MACD(close)
+    k, d, rsi = StochRSI(close)
+    fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                        row_heights=[0.4, 0.15, 0.25, 0.2],
+                        subplot_titles=(f"{symbol} {tf}", "RSI", "MACD", "Stochastic RSI"))
+    fig.add_trace(go.Candlestick(x=df["Time"], open=df["Open"], high=df["High"], low=df["Low"], close=close,
+                                 increasing_line_color="#00ff88", decreasing_line_color="#ff3b5c", name="Price"), 1, 1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=EMA(close, 20), line=dict(color="#00a2ff", width=1.5), name="EMA20"), 1, 1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=EMA(close, 50), line=dict(color="#ffaa00", width=1.5, dash="dash"),
+                             name="EMA50"), 1, 1)
+
+    def hline(y, color, dash, width, text, pos="right", size=9):
+        fig.add_hline(y=y, line_dash=dash, line_color=color, line_width=width, annotation_text=f"  {text}",
+                      annotation_position=pos, annotation_font=dict(size=size, color=color), row=1, col=1)
+
+    if show_fib:
+        fib = get_fibonacci(df, 100)
+        if fib:
+            for r_, p_ in fib["levels"].items():
+                hline(p_, "rgba(0,200,255,0.55)", "dash", 1, f"Fib {r_}")
+            hline(fib["high"], "rgba(148,163,184,0.6)", "dot", 1, "Swing High")
+            hline(fib["low"], "rgba(148,163,184,0.6)", "dot", 1, "Swing Low")
+    if show_liq:
+        bs, ss = get_liquidity_zones(df, 100)
+        for lv_ in bs[:3]:
+            hline(lv_, "rgba(0,255,136,0.4)", "solid", 1, "💧 BSL", "left")
+        for lv_ in ss[:3]:
+            hline(lv_, "rgba(255,59,92,0.4)", "solid", 1, "💧 SSL", "left")
+    if show_sr:
+        sup, res = get_support_resistance(df)
+        for lv_ in res[:2]:
+            hline(lv_, "rgba(255,100,100,0.5)", "longdash", 1.2, f"R {format_price(lv_)}")
+        for lv_ in sup[:2]:
+            hline(lv_, "rgba(100,255,100,0.5)", "longdash", 1.2, f"S {format_price(lv_)}")
+    if show_plan and plan and plan.get("setup_type") in VALID_SETUPS:
+        e, sl = plan["entry"], plan["stop_loss"]
+        hline(e, "#00c8ff", "solid", 2, f"🎯 ENTRY {e:.6f}", "left", 11)
+        hline(sl, "#ff3b5c", "solid", 2, f"🛑 SL {sl:.6f}", "left", 11)
+        for key in ("tp1", "tp2", "tp3"):
+            hline(plan[key], "#00ff88", "dot", 1.5, f"{key.upper()} {plan[key]:.6f}", "left", 10)
+        fig.add_hrect(y0=sl, y1=e, fillcolor="rgba(255,59,92,0.08)", line_width=0, row=1, col=1)
+        fig.add_hrect(y0=e, y1=plan["tp2"], fillcolor="rgba(0,255,136,0.06)", line_width=0, row=1, col=1)
+
+    fig.add_trace(go.Scatter(x=df["Time"], y=rsi, line=dict(color="#a855f7", width=2), name="RSI"), 2, 1)
+    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=macd_l, line=dict(color="#00a2ff", width=1.5), name="DIF"), 3, 1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=macd_s, line=dict(color="#ff00ff", width=1.5), name="DEA"), 3, 1)
+    fig.add_trace(go.Bar(x=df["Time"], y=hist, marker_color=["#00ff88" if h >= 0 else "#ff3b5c" for h in hist],
+                         opacity=0.5, name="Hist"), 3, 1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=k, line=dict(color="#ffaa00", width=1.5), name="K"), 4, 1)
+    fig.add_trace(go.Scatter(x=df["Time"], y=d, line=dict(color="#ff00ff", width=1.5, dash="dash"), name="D"), 4, 1)
+    fig.add_hline(y=80, line_dash="dash", line_color="red", row=4, col=1)
+    fig.add_hline(y=20, line_dash="dash", line_color="green", row=4, col=1)
+    fig.update_layout(template="plotly_dark", height=900, hovermode="x unified", dragmode="pan",
+                      xaxis_rangeslider_visible=False, paper_bgcolor="#0a0a1a", plot_bgcolor="#0a0a1a",
+                      font=dict(color="#94a3b8"), margin=dict(l=10, r=10, t=50, b=10),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_xaxes(gridcolor="rgba(255,255,255,0.03)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.03)")
+    return fig
+
+
+def equity_chart(rs, title):
+    cum = pd.Series(rs, dtype=float).cumsum()
+    fig = go.Figure(go.Scatter(y=cum, mode="lines", line=dict(color="#00ff88", width=2), fill="tozeroy",
+                               fillcolor="rgba(0,255,136,0.08)"))
+    fig.update_layout(template="plotly_dark", height=300, title=title, paper_bgcolor="#0a0a1a",
+                      plot_bgcolor="#0a0a1a", margin=dict(l=10, r=10, t=40, b=10), yaxis_title="Kumulatif R")
+    return fig
+
+
+# =========================================================
+# RENDER PLAN
+# =========================================================
+def level_box(col, label, value, sub="", cls=""):
+    col.markdown(f'<div class="level-box"><div class="level-label">{label}</div>'
+                 f'<div class="level-value">{value}</div><div class="level-pct {cls}">{sub}</div></div>',
+                 unsafe_allow_html=True)
+
+
+def render_trade_plan(plan, symbol, tf):
     st.markdown(f"""
     <div class="plan-card">
-        <div class="plan-header">🎯 AUTO TRADE PLAN — {symbol} · {timeframe}</div>
-        <div style="color:#64748b;font-size:13px;margin-bottom:12px;">
-            Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-        </div>
-        <span class="setup-badge {plan['setup_class']}">{plan['setup_label']}</span>
-        <span class="plan-confidence" style="margin-left:10px;">
-            {'⭐' * plan['confidence']} ({plan['confidence']}/5)
-        </span>
-    </div>
-    """, unsafe_allow_html=True)
+      <div class="plan-header">🎯 AUTO TRADE PLAN — {symbol} · {tf}</div>
+      <div style="color:#64748b;font-size:13px;margin-bottom:12px;">Generated: {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC</div>
+      <span class="setup-badge {plan['setup_class']}">{plan['setup_label']}</span>
+      <span class="plan-confidence" style="margin-left:10px;">{'⭐' * plan['confidence']} ({plan['confidence']}/5)</span>
+    </div>""", unsafe_allow_html=True)
 
     if plan["setup_type"] == "WAIT":
         st.warning("⏳ " + " | ".join(plan["reasons"]))
         if plan.get("dip_level"):
-            st.info(f"💡 Tunggu pullback ke **${plan['dip_level']:.6f}** "
-                    f"atau breakout di atas **${plan.get('breakout_level') or 0:.6f}**")
+            st.info(f"💡 Tunggu pullback ke **{plan['dip_level']:.6f}** atau breakout di atas "
+                    f"**{plan.get('breakout_level') or 0:.6f}**")
         return
 
-    entry = plan["entry"]; sl = plan["stop_loss"]
-    tp1 = plan["tp1"]; tp2 = plan["tp2"]; tp3 = plan["tp3"]
-    def pct(a, b): return (a / b - 1) * 100
+    e = plan["entry"]
+    pct = lambda x: f"{(x / e - 1) * 100:+.2f}%"
+    c = st.columns(4)
+    level_box(c[0], "📈 Entry", f"${e:.6f}", plan["order_type"])
+    level_box(c[1], "🛑 Stop Loss", f"${plan['stop_loss']:.6f}", pct(plan["stop_loss"]), "neg")
+    level_box(c[2], "🎯 TP1", f"${plan['tp1']:.6f}", pct(plan["tp1"]), "pos")
+    level_box(c[3], "🎯 TP2", f"${plan['tp2']:.6f}", pct(plan["tp2"]), "pos")
+    c = st.columns(4)
+    level_box(c[0], "🎯 TP3", f"${plan['tp3']:.6f}", pct(plan["tp3"]), "pos")
+    rr = plan["rr"]
+    level_box(c[1], "📊 Risk/Reward", f"1 : {rr:.2f}", "✅ GOOD" if rr >= 2 else "⚠️ OK")
+    level_box(c[2], "💰 Position", f"${plan['position_usd']:.2f}", f"{plan['units']:.4f} unit")
+    level_box(c[3], "💵 Max Loss", f"${plan['max_loss_usd']:.2f}", f"{plan['risk_pct']:.1f}% modal", "neg")
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">📈 Entry</div>
-            <div class="level-value">${entry:.6f}</div>
-            <div class="level-pct">Limit / Market</div></div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">🛑 Stop Loss</div>
-            <div class="level-value">${sl:.6f}</div>
-            <div class="level-pct neg">{pct(sl, entry):+.2f}%</div></div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">🎯 TP1</div>
-            <div class="level-value">${tp1:.6f}</div>
-            <div class="level-pct pos">{pct(tp1, entry):+.2f}%</div></div>""", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">🎯 TP2</div>
-            <div class="level-value">${tp2:.6f}</div>
-            <div class="level-pct pos">{pct(tp2, entry):+.2f}%</div></div>""", unsafe_allow_html=True)
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">🎯 TP3</div>
-            <div class="level-value">${tp3:.6f}</div>
-            <div class="level-pct pos">{pct(tp3, entry):+.2f}%</div></div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">📊 Risk/Reward</div>
-            <div class="level-value">1 : {plan['rr']:.2f}</div>
-            <div class="level-pct">{'✅ GOOD' if plan['rr'] >= 2 else '⚠️ LOW' if plan['rr'] >= 1.5 else '❌ BAD'}</div></div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">💰 Position Size</div>
-            <div class="level-value">${plan['position_usd']:.2f}</div>
-            <div class="level-pct">{plan['units']:.4f} unit</div></div>""", unsafe_allow_html=True)
-    with c4:
-        st.markdown(f"""<div class="level-box">
-            <div class="level-label">💵 Max Loss</div>
-            <div class="level-value">${plan['max_loss_usd']:.2f}</div>
-            <div class="level-pct neg">{plan['risk_pct']:.1f}% modal</div></div>""", unsafe_allow_html=True)
-
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown("##### 🧠 Alasan (Why this setup)")
+    a, b = st.columns(2)
+    with a:
+        st.markdown("##### 🧠 Alasan")
         for r in plan["reasons"]:
             st.markdown(f"<div class='reason-item'>{r}</div>", unsafe_allow_html=True)
-    with col_b:
-        st.markdown("##### ⚠️ Invalidasi (Batal jika)")
+    with b:
+        st.markdown("##### ⚠️ Invalidasi")
         for i in plan["invalidations"]:
             st.markdown(f"<div class='reason-item'>{i}</div>", unsafe_allow_html=True)
 
-    if plan.get("alternatives"):
-        st.markdown("##### 📋 Skenario Alternatif")
-        for alt in plan["alternatives"]:
-            with st.expander(f"{alt['name']} — R:R 1:{alt['rr']:.2f}"):
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Entry", f"${alt['entry']:.6f}")
-                c2.metric("SL", f"${alt['sl']:.6f}")
-                c3.metric("TP", f"${alt['tp']:.6f}")
-                st.caption(alt["note"])
+    for alt in plan.get("alternatives", []):
+        with st.expander(f"{alt['name']} — R:R 1:{alt['rr']:.2f}"):
+            m = st.columns(3)
+            m[0].metric("Entry", f"${alt['entry']:.6f}")
+            m[1].metric("SL", f"${alt['sl']:.6f}")
+            m[2].metric("TP", f"${alt['tp']:.6f}")
+            st.caption(alt["note"])
 
     st.markdown("---")
     b1, b2, b3 = st.columns(3)
-    with b1:
-        if st.button("📱 Kirim Plan ke Telegram", use_container_width=True, key="btn_tg_plan"):
-            if send_telegram_plan(format_plan_for_telegram(plan)):
-                st.success("✅ Plan terkirim!")
-            else:
-                st.error("❌ Gagal kirim.")
-    with b2:
-        if st.button("💾 Simpan ke Database", use_container_width=True, key="btn_save_plan"):
-            if save_trade_plan(plan):
-                st.success("✅ Plan tersimpan!")
-            else:
-                st.error("❌ Gagal simpan.")
-    with b3:
-        plan_txt = format_plan_for_telegram(plan).replace("<b>", "").replace("</b>", "")
-        st.download_button("📋 Download Plan (TXT)", plan_txt,
-                           file_name=f"plan_{symbol}_{timeframe}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-                           mime="text/plain", use_container_width=True)
+    if b1.button("📱 Kirim ke Telegram", width="stretch", key="btn_tg_plan"):
+        ok, err = send_telegram(format_plan_for_telegram(plan))
+        st.success("✅ Terkirim") if ok else st.error(f"❌ {err}")
+    if b2.button("📝 Lacak sebagai paper trade", width="stretch", key="btn_track"):
+        if save_signal(plan_to_row(plan, source="manual")):
+            st.success("✅ Disimpan & akan dilacak otomatis")
+        else:
+            st.error("❌ Gagal simpan (cek Supabase)")
+    txt = re.sub(r"</?[bi]>", "", format_plan_for_telegram(plan))
+    b3.download_button("📋 Download TXT", txt, mime="text/plain", width="stretch",
+                       file_name=f"plan_{symbol}_{tf}_{utcnow().strftime('%Y%m%d_%H%M')}.txt")
+
 
 # =========================================================
-# INITIALIZATION
+# STATE
 # =========================================================
 if "watchlist" not in st.session_state:
     st.session_state.watchlist = get_watchlist()
-if "pending_signal" not in st.session_state:
-    st.session_state.pending_signal = {}
-else:
-    # Auto-migrate: hapus struktur lama yang tidak lengkap
-    for sym in list(st.session_state.pending_signal.keys()):
-        d = st.session_state.pending_signal[sym]
-        if not isinstance(d, dict) or "tp1" not in d or "tp2" not in d:
-            del st.session_state.pending_signal[sym]
-if "performance_stats" not in st.session_state:
-    st.session_state.performance_stats = get_performance()
+if "alert_times" not in st.session_state:
+    st.session_state.alert_times = {}
 
-# =========================================================
-# MAIN TITLE
-# =========================================================
 st.title("🤖 Crypto Signal Pro")
-st.caption("Multi Timeframe + MACD + Stochastic RSI + Fibonacci + Liquidity + Auto Trade Plan")
+st.caption("Multi TF + MACD + StochRSI + Fibonacci + Liquidity + Auto Trade Plan + Paper Trading Tracker")
 
 # =========================================================
 # SIDEBAR
 # =========================================================
 with st.sidebar:
     st.header("⚙️ Settings")
+    st.success("☁️ Supabase terhubung") if db_ok() else st.warning("⚠️ Supabase tidak terhubung — mode tanpa database")
+
     st.subheader("📋 Watchlist")
-    st.success("☁️ Supabase Connected")
-
-    col_add1, col_add2 = st.columns([3, 1])
-    with col_add1:
-        new_coin = st.text_input("Add Coin", placeholder="BTC", label_visibility="collapsed")
-    with col_add2:
-        if st.button("➕", use_container_width=True):
-            if new_coin:
-                coin = new_coin.upper().strip()
-                if coin not in st.session_state.watchlist:
-                    if add_coin(coin):
-                        st.session_state.watchlist.append(coin)
-                        st.rerun()
-
-    st.markdown("**Your Coins:**")
+    ca, cb = st.columns([3, 1])
+    new_coin = ca.text_input("Add Coin", placeholder="BTC", label_visibility="collapsed")
+    if cb.button("➕", width="stretch") and new_coin:
+        coin = re.sub(r"[^A-Z0-9]", "", new_coin.upper())
+        if coin and coin not in st.session_state.watchlist and add_coin(coin):
+            st.session_state.watchlist.append(coin)
+            st.rerun()
     cols = st.columns(3)
-    for idx, coin in enumerate(st.session_state.watchlist):
-        col_idx = idx % 3
-        with cols[col_idx]:
-            if st.button(f"✕ {coin}", key=f"del_{coin}", use_container_width=True):
-                if remove_coin(coin):
-                    st.session_state.watchlist.remove(coin)
-                    st.rerun()
+    for idx, coin in enumerate(list(st.session_state.watchlist)):
+        if cols[idx % 3].button(f"✕ {coin}", key=f"del_{coin}", width="stretch"):
+            if remove_coin(coin):
+                st.session_state.watchlist.remove(coin)
+                st.rerun()
 
     st.divider()
     st.subheader("💰 Position Sizing")
@@ -1393,443 +1129,239 @@ with st.sidebar:
     st.caption(f"Max loss per trade: **${account_balance * risk_pct / 100:.2f}**")
 
     st.divider()
-    st.subheader("📊 Trading Settings")
-    refresh = st.slider("🔄 Refresh (detik)", 10, 60, 30)
-    hold_minutes = st.slider("Hold Signal (menit)", 5, 30, 15)
+    st.subheader("🧪 Strategi")
+    cfg = dict(DEFAULT_CFG)
+    cfg["min_conf"] = st.slider("Min confidence alert", 1, 5, DEFAULT_CFG["min_conf"])
+    cfg["min_rr"] = st.slider("Min RR (ke TP2)", 1.0, 4.0, DEFAULT_CFG["min_rr"], 0.1)
+    cfg["max_sl_pct"] = st.slider("Max jarak SL (%)", 1.0, 15.0, DEFAULT_CFG["max_sl_pct"], 0.5)
+    cfg["min_vol"] = st.slider("Min RVOL", 0.1, 2.0, DEFAULT_CFG["min_vol"], 0.1)
+    cfg["use_htf"] = st.toggle("Filter tren TF lebih besar", value=True)
+    cfg["fee_pct"] = st.number_input("Fee+slippage round-trip (%)", 0.0, 2.0, DEFAULT_CFG["fee_pct"], 0.05)
+    cfg["cooldown_min"] = st.slider("Cooldown alert (menit)", 5, 240, DEFAULT_CFG["cooldown_min"], 5)
+
+    st.divider()
+    st.subheader("🔄 Scanner")
+    auto_on = st.toggle("Auto scan & refresh", value=False)
+    refresh = st.slider("Interval (detik)", 30, 300, 60, 10)
 
     st.divider()
     st.subheader("📱 Telegram")
-    if st.button("🚀 Test Telegram", use_container_width=True):
-        test_msg = (
-            "🤖 <b>Crypto Signal Pro</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "✅ <b>Koneksi Berhasil!</b>\n\n"
-            "Sistem siap mengirim notifikasi:\n"
-            "• 🎯 Auto Trade Plan\n"
-            "• 📊 Signal Multi-TF\n"
-            "• 🚨 Alert Setup Valid\n\n"
-            "📈 Format pesan:\n"
-            "  - Setup detail (Fib/SSL/BO)\n"
-            "  - Entry, SL, TP1-3\n"
-            "  - RR & Position Sizing\n"
-            "  - Alasan & Invalidasi\n"
-            "  - Skenario Alternatif\n\n"
-            f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-        )
-        if send_telegram_plan(test_msg):
-            st.success("✅ Test terkirim!")
-        else:
-            st.error("❌ Gagal. Cek token/chat ID.")
+    send_tg = st.toggle("Kirim alert otomatis", value=True)
+    if st.button("🚀 Test Telegram", width="stretch"):
+        ok, err = send_telegram("🤖 <b>Crypto Signal Pro</b>\n✅ Koneksi berhasil!\n"
+                                f"🕐 {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+        st.success("✅ Test terkirim!") if ok else st.error(f"❌ {err}")
 
-    st.divider()
-    st.subheader("📊 Status")
-    st.metric("Total Coins", len(st.session_state.watchlist))
-    stats = get_performance()
-    st.metric("Total Signals", stats.get('total_signals', 0))
-
-# =========================================================
-# AUTO REFRESH
-# =========================================================
-st_autorefresh(interval=refresh * 1000, key="refresh")
+if auto_on:
+    st_autorefresh(interval=refresh * 1000, key="refresh")
 
 # =========================================================
 # TABS
 # =========================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Scanner", "📈 Chart + Plan", "🧪 Backtest", "📋 History", "📊 Performance"
-])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Scanner", "📈 Chart + Plan", "🧪 Backtest", "📋 History", "📊 Performance"])
+
+
+def run_scan(symbols):
+    def one(s):
+        try:
+            return s, analyze_mtf(s, cfg, account_balance, risk_pct)
+        except Exception as e:
+            log.warning("scan %s: %s", s, e)
+            return s, None
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        return dict(ex.map(one, symbols))
+
 
 # ==================== TAB 1: SCANNER ====================
 with tab1:
-    st.subheader("📊 Signal Scanner — Synced with Chart")
-    st.caption("Signal berdasarkan Auto Trade Plan yang sama dengan Tab Chart")
+    st.subheader("📊 Signal Scanner")
+    st.caption("Sinyal memakai Auto Trade Plan yang sama dengan tab Chart. Alert hanya untuk setup valid "
+               "(confidence & RR sesuai pengaturan) dan tidak duplikat selama cooldown.")
+    scan_now = st.button("🔍 Scan sekarang")
+    first = "scan_results" not in st.session_state
+    due_auto = auto_on and (time.time() - st.session_state.get("scan_ts", 0)) >= refresh - 2
+    if scan_now or first or due_auto:
+        with st.spinner("Scanning watchlist..."):
+            st.session_state.scan_results = run_scan(st.session_state.watchlist[:50])
+            st.session_state.scan_ts = time.time()
+            n_alert = process_alerts(st.session_state.scan_results, cfg, send_tg)
+            n_upd = update_active_signals(send_tg)
+        if n_alert:
+            st.toast(f"🔔 {n_alert} sinyal baru")
+        if n_upd:
+            st.toast(f"📌 {n_upd} sinyal aktif berubah status")
 
-    all_signals = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    current_time = datetime.now()
-    expired = []
-    for symbol, data in st.session_state.pending_signal.items():
-        elapsed = (current_time - data["time"]).seconds / 60
-        if elapsed > hold_minutes:
-            expired.append(symbol)
-    for sym in expired:
-        del st.session_state.pending_signal[sym]
-
-    scan_list = st.session_state.watchlist[:50]
-
-    for idx, symbol in enumerate(scan_list):
-        progress_bar.progress((idx + 1) / len(scan_list))
-        status_text.text(f"🔄 Scanning {symbol}...")
-
-        result = analyze_mtf_synced(symbol, ["15m", "1h", "4h"])
-        if not result:
-            continue
-
-        best_plan = result.get("best_plan")
-
-        signal_data = {
-            "Coin": symbol,
-            "Signal": result["main_signal"],
-            "Strength": "⭐" * result.get("main_strength", 1),
-            "Conf": f"{result.get('total_score', 50):.0f}",
-        }
-
-        for tf in ["15m", "1h", "4h"]:
-            if tf in result["timeframes"]:
-                tf_plan = result["timeframes"][tf]["plan"]
-                tf_analysis = result["timeframes"][tf]["analysis"]
-                setup_short = {
-                    "BUY_THE_DIP": "🅰️ DIP",
-                    "BREAKOUT": "🅱️ BO",
-                    "LIQUIDITY_GRAB": "🅲 LIQ",
-                    "WAIT": "⏳ WAIT"
-                }.get(tf_plan["setup_type"], "⏳ WAIT")
-                signal_data[f"{tf.upper()}"] = f"{setup_short} ({tf_plan['confidence']}⭐)"
-                signal_data[f"{tf.upper()} RSI"] = f"{tf_analysis['rsi']:.1f}"
-                signal_data[f"{tf.upper()} K"] = f"{tf_analysis['stoch']['k']:.1f}"
-
-        if best_plan and best_plan["setup_type"] != "WAIT":
-            signal_data["RR"] = f"1:{best_plan['rr']:.2f}"
-        else:
-            signal_data["RR"] = "-"
-
-        all_signals.append(signal_data)
-
-        # Simpan ke pending — dengan detail
-        if (best_plan and best_plan["setup_type"] != "WAIT"
-            and best_plan["confidence"] >= 2
-            and best_plan["rr"] >= 1.5
-            and symbol not in st.session_state.pending_signal):
-
-            fib_data = best_plan.get("fib", {})
-            dip_fib_level = best_plan.get("dip_fib_level") or "0.618"
-            dip_fib_price = best_plan.get("dip_level", best_plan["entry"])
-            swing_high = best_plan.get("swing_high", 0) or fib_data.get("Swing High", 0)
-            swing_low = best_plan.get("swing_low", 0) or fib_data.get("Swing Low", 0)
-            fib_range = swing_high - swing_low if swing_high and swing_low else 0
-
-            st.session_state.pending_signal[symbol] = {
-                "signal": best_plan["setup_label"],
-                "time": datetime.now(),
-                "setup_type": best_plan["setup_type"],
-                "entry": best_plan["entry"],
-                "sl": best_plan["stop_loss"],
-                "tp1": best_plan["tp1"],
-                "tp2": best_plan["tp2"],
-                "tp3": best_plan["tp3"],
-                "rr": best_plan["rr"],
-                "timeframe": best_plan["timeframe"],
-                "confidence": best_plan["confidence"],
-                "current_price": best_plan["price"],
-                "reasons": best_plan["reasons"],
-                "invalidations": best_plan["invalidations"],
-                # Detail setup
-                "dip_fib_level": dip_fib_level,
-                "dip_fib_price": dip_fib_price,
-                "swing_high": swing_high,
-                "swing_low": swing_low,
-                "fib_range": fib_range,
-                "breakout_resistance": best_plan.get("breakout_level", 0) or 0,
-                "liq_ssl_price": best_plan.get("liq_level", 0) or 0,
-            }
-
-            # Kirim Telegram dengan format detail
-            send_telegram_once(symbol, best_plan["setup_label"], best_plan)
-
-    progress_bar.empty()
-    status_text.empty()
-
-    if all_signals:
-        df_signals = pd.DataFrame(all_signals)
-        col_order = ["Coin", "Signal", "Strength", "Conf", "RR",
-                     "15M", "15M RSI", "15M K",
-                     "1H", "1H RSI", "1H K",
-                     "4H", "4H RSI", "4H K"]
-        col_order = [c for c in col_order if c in df_signals.columns]
-        df_signals = df_signals[col_order]
-        st.dataframe(df_signals, use_container_width=True, hide_index=True)
-
-        buy_signals = [s for s in all_signals if "BUY" in s["Signal"]]
-        if buy_signals:
-            st.success(f"🏆 {len(buy_signals)} buy signals found")
+    results = {k: v for k, v in st.session_state.scan_results.items() if v}
+    if results:
+        st.caption(f"Terakhir scan: {datetime.fromtimestamp(st.session_state.scan_ts).strftime('%H:%M:%S')}")
+        table = []
+        for sym, res in results.items():
+            bp = res["best_plan"]
+            row = {"Coin": sym, "Signal": res["main_signal"], "Strength": "⭐" * res["main_strength"],
+                   "RR": f"1:{bp['rr']:.2f}" if bp else "-"}
+            for tf in TIMEFRAMES:
+                if tf in res["timeframes"]:
+                    p, a = res["timeframes"][tf]["plan"], res["timeframes"][tf]["analysis"]
+                    row[tf.upper()] = f"{SETUP_SHORT[p['setup_type']]} ({p['confidence']}⭐)"
+                    row[f"{tf.upper()} RSI"] = f"{a['rsi']:.1f}"
+                    row[f"{tf.upper()} K"] = f"{a['stoch']['k']:.1f}"
+            table.append(row)
+        st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+        nb = sum(1 for r in results.values() if r["best_plan"])
+        if nb:
+            st.success(f"🏆 {nb} coin dengan setup valid")
     else:
-        st.info("ℹ️ Tidak ada data")
+        st.info("ℹ️ Belum ada data (cek koneksi / watchlist).")
 
-    # ===== PENDING SIGNALS — versi detail dengan angka setup =====
-    if st.session_state.pending_signal:
-        st.divider()
-        st.subheader("⏳ Pending Signals (Valid Setup)")
-        st.caption("Detail level setup — angka Fib / SSL / Resistance yang jadi dasar entry")
+    st.divider()
+    st.subheader("⏳ Sinyal Aktif (paper trade)")
+    active = get_active_signals()
+    if active:
+        rows = []
+        for s in sorted(active, key=lambda x: x["timestamp"], reverse=True):
+            d15 = get_data(s["symbol"], "15m", 100)
+            cur = float(d15["Close"].iloc[-1]) if d15 is not None else None
+            rows.append({"Waktu (UTC)": str(s["timestamp"])[:16].replace("T", " "), "Coin": s["symbol"],
+                         "TF": s.get("timeframe"), "Setup": s.get("signal"), "Status": s.get("status"),
+                         "Conf": f"{s.get('confidence', 0)}⭐", "Order": s.get("order_type"),
+                         "Current": format_price(cur), "Entry": format_price(s["entry"]),
+                         "Jarak": f"{(s['entry'] / cur - 1) * 100:+.2f}%" if cur else "-",
+                         "SL": format_price(s["sl"]), "TP1": format_price(s["tp1"]),
+                         "TP2": format_price(s["tp2"]), "RR": f"1:{s['rr']:.2f}"})
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+    else:
+        st.caption("Belum ada sinyal aktif.")
 
-        pending_data = []
-        for symbol, data in st.session_state.pending_signal.items():
-            elapsed = (datetime.now() - data["time"]).seconds / 60
-            remaining = max(0, hold_minutes - elapsed)
-
-            entry = data.get("entry", 0)
-            sl = data.get("sl", 0)
-            tp1 = data.get("tp1", 0)
-            tp2 = data.get("tp2", 0)
-            rr = data.get("rr", 0)
-            setup_type = data.get("setup_type", "")
-            setup_label = data.get("signal", "-")
-            confidence = data.get("confidence", 0)
-            tf = data.get("timeframe", "-")
-            current_price = data.get("current_price", entry)
-
-            dist_pct = (entry - current_price) / current_price * 100 if current_price else 0
-            if abs(dist_pct) < 0.5:
-                dist_str = "🎯 AT ENTRY"
-            elif dist_pct > 0:
-                dist_str = f"⏳ {dist_pct:+.2f}% (tunggu naik)"
-            else:
-                dist_str = f"✅ {dist_pct:+.2f}%"
-
-            # Angka setup
-            if setup_type == "BUY_THE_DIP":
-                fib_level = data.get("dip_fib_level", "0.618")
-                fib_price = data.get("dip_fib_price", entry)
-                reason = f"📐 Fib {fib_level} = {format_price(fib_price)}"
-                setup_angka = f"Fib {fib_level} = {format_price(fib_price)}"
-            elif setup_type == "BREAKOUT":
-                res_level = data.get("breakout_resistance", entry)
-                reason = f"🚀 Tembus R {format_price(res_level)}"
-                setup_angka = f"R = {format_price(res_level)}"
-            elif setup_type == "LIQUIDITY_GRAB":
-                ssl_level = data.get("liq_ssl_price", entry)
-                reason = f"💧 SSL sweep {format_price(ssl_level)}"
-                setup_angka = f"SSL = {format_price(ssl_level)}"
-            else:
-                reason = "-"
-                setup_angka = "-"
-
-            pending_data.append({
-                "Coin": symbol,
-                "Setup": setup_label,
-                "Angka Setup": setup_angka,
-                "TF": tf,
-                "Conf": f"{confidence}⭐",
-                "Current": format_price(current_price),
-                "Entry": format_price(entry),
-                "Jarak": dist_str,
-                "SL": format_price(sl),
-                "TP1": format_price(tp1),
-                "TP2": format_price(tp2),
-                "RR": f"1:{rr:.2f}",
-                "Alasan": reason,
-                "Left": f"{remaining:.0f}m"
-            })
-
-        if pending_data:
-            df_pending = pd.DataFrame(pending_data)
-            st.dataframe(df_pending, use_container_width=True, hide_index=True)
-
-            # Detail expander per coin
-            st.markdown("### 📋 Detail Setup per Coin")
-            for symbol, data in st.session_state.pending_signal.items():
-                setup_type = data.get("setup_type", "")
-                setup_label = data.get("signal", "-")
-                confidence = data.get("confidence", 0)
-                tf = data.get("timeframe", "-")
-                entry = data.get("entry", 0)
-                sl = data.get("sl", 0)
-                tp1 = data.get("tp1", 0)
-                tp2 = data.get("tp2", 0)
-                tp3 = data.get("tp3", 0)
-                rr = data.get("rr", 0)
-                current = data.get("current_price", entry)
-
-                with st.expander(f"**{symbol}** — {setup_label} ({confidence}⭐, {tf})", expanded=False):
-
-                    st.markdown("##### 🎯 Level Setup (Angka Referensi)")
-
-                    if setup_type == "BUY_THE_DIP":
-                        fib_level = data.get("dip_fib_level", "0.618")
-                        fib_price = data.get("dip_fib_price", entry)
-                        swing_high = data.get("swing_high", 0)
-                        swing_low = data.get("swing_low", 0)
-                        fib_range = data.get("fib_range", 0)
-
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Fib Level", str(fib_level))
-                        col2.metric("Fib Price", format_price(fib_price))
-                        col3.metric("Swing High", format_price(swing_high))
-                        col4.metric("Swing Low", format_price(swing_low))
-                        st.caption(f"📐 **Perhitungan Fib {fib_level}:**")
-                        st.caption(f"    Range: {format_price(swing_high)} − {format_price(swing_low)} = {format_price(fib_range)}")
-                        try:
-                            fib_num = float(fib_level)
-                            st.caption(f"    Fib {fib_level}: {format_price(swing_high)} − ({format_price(fib_range)} × {fib_level}) = **{format_price(fib_price)}**")
-                        except:
-                            pass
-
-                    elif setup_type == "BREAKOUT":
-                        res_level = data.get("breakout_resistance", entry)
-                        st.metric("Resistance Level", format_price(res_level))
-                        st.caption(f"🚀 **Breakout:** Harga tembus resistance {format_price(res_level)}")
-
-                    elif setup_type == "LIQUIDITY_GRAB":
-                        ssl_price = data.get("liq_ssl_price", entry)
-                        st.metric("SSL Level", format_price(ssl_price))
-                        st.caption(f"💧 **Liquidity Grab:** Harga sweep SSL di {format_price(ssl_price)}")
-
-                    st.markdown("##### 📊 Level Trading")
-                    c1, c2, c3, c4, c5, c6 = st.columns(6)
-                    c1.metric("Current", format_price(current))
-                    c2.metric("Entry", format_price(entry))
-                    c3.metric("SL", format_price(sl), f"{(sl/entry-1)*100:+.2f}%")
-                    c4.metric("TP1", format_price(tp1), f"{(tp1/entry-1)*100:+.2f}%")
-                    c5.metric("TP2", format_price(tp2), f"{(tp2/entry-1)*100:+.2f}%")
-                    c6.metric("TP3", format_price(tp3), f"{(tp3/entry-1)*100:+.2f}%")
-
-                    st.markdown("##### 🧠 Alasan (Why this setup)")
-                    reasons = data.get("reasons", [])
-                    if reasons:
-                        for r in reasons:
-                            st.markdown(f"- {r}")
-
-                    st.markdown("##### ⚠️ Invalidasi (Batal jika)")
-                    invalidations = data.get("invalidations", [])
-                    if invalidations:
-                        for inv in invalidations:
-                            st.markdown(f"- {inv}")
-                    else:
-                        st.markdown(f"- Harga close di bawah SL {format_price(sl)}")
-
-# ==================== TAB 2: CHART + PLAN ====================
+# ==================== TAB 2: CHART ====================
 with tab2:
-    st.subheader("📈 Chart Analysis + 🎯 Auto Trade Plan")
-    chart_coin = st.selectbox("Select Coin", st.session_state.watchlist, key="chart_select")
-    chart_tf = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=1, key="chart_tf")
-
-    tog1, tog2, tog3, tog4 = st.columns(4)
-    with tog1: show_fib = st.toggle("📐 Fibonacci", value=True, key="tog_fib")
-    with tog2: show_liq = st.toggle("💧 Liquidity", value=True, key="tog_liq")
-    with tog3: show_sr = st.toggle("📏 S/R", value=True, key="tog_sr")
-    with tog4: show_plan_overlay = st.toggle("🎯 Plan Overlay", value=True, key="tog_plan")
+    st.subheader("📈 Chart + 🎯 Auto Trade Plan")
+    cc1, cc2 = st.columns(2)
+    chart_coin = cc1.selectbox("Coin", st.session_state.watchlist, key="chart_select")
+    chart_tf = cc2.selectbox("Timeframe", TIMEFRAMES, index=1, key="chart_tf")
+    t1, t2, t3, t4 = st.columns(4)
+    show_fib = t1.toggle("📐 Fibonacci", True, key="tog_fib")
+    show_liq = t2.toggle("💧 Liquidity", True, key="tog_liq")
+    show_sr = t3.toggle("📏 S/R", True, key="tog_sr")
+    show_plan = t4.toggle("🎯 Plan", True, key="tog_plan")
 
     if chart_coin:
-        df = get_data_safe(chart_coin, chart_tf, min_candles=100)
-        if df is not None:
-            result = analyze_macd_stoch(df, chart_tf)
-            plan = generate_trade_plan(df, chart_coin, chart_tf,
-                                        account_balance=account_balance,
-                                        risk_pct=risk_pct)
+        df = get_data(chart_coin, chart_tf, 500)
+        if df is not None and len(df) >= 80:
+            mtf = analyze_mtf(chart_coin, cfg, account_balance, risk_pct)
+            tfres = mtf["timeframes"].get(chart_tf) if mtf else None
+            plan = tfres["plan"] if tfres else generate_trade_plan(df, chart_coin, chart_tf, account_balance, risk_pct, cfg)
+            result = tfres["analysis"] if tfres else analyze_macd_stoch(df, chart_tf)
 
-            fig = create_chart(df, chart_coin, chart_tf, plan=plan,
-                               show_fib=show_fib, show_liquidity=show_liq,
-                               show_sr=show_sr, show_plan=show_plan_overlay)
+            fig = create_chart(df, chart_coin, chart_tf, plan, show_fib, show_liq, show_sr, show_plan)
             if fig:
-                st.plotly_chart(fig, use_container_width=True)
-
+                st.plotly_chart(fig, width="stretch")
             if result:
-                col1, col2, col3, col4 = st.columns(4)
-                if "BUY" in result["action"]:
-                    html = f'<div class="signal-buy">{result["action"]}</div>'
-                elif "SELL" in result["action"]:
-                    html = f'<div class="signal-sell">{result["action"]}</div>'
-                elif "TAKE PROFIT" in result["action"]:
-                    html = f'<div class="signal-take-profit">{result["action"]}</div>'
-                else:
-                    html = f'<div class="signal-hold">{result["action"]}</div>'
-                col1.markdown(html, unsafe_allow_html=True)
-                col2.metric("MACD DIF", f"{result['macd']['dif']:.6f}")
-                col3.metric("RSI", f"{result['rsi']:.1f}")
-                col4.metric("Volume", f"{result['volume_ratio']:.2f}x")
-
+                m = st.columns(5)
+                act = result["action"]
+                css = ("signal-buy" if "BUY" in act else "signal-sell" if "SELL" in act
+                       else "signal-take-profit" if "TAKE" in act else "signal-hold")
+                m[0].markdown(f'<div class="sig {css}">{act}</div>', unsafe_allow_html=True)
+                m[1].metric("MACD DIF", f"{result['macd']['dif']:.6f}")
+                m[2].metric("RSI (Wilder)", f"{result['rsi']:.1f}")
+                m[3].metric("RVOL", f"{result['volume_ratio']:.2f}x")
+                m[4].metric("ADX", f"{result['adx']:.1f}")
             st.divider()
             if plan:
-                render_trade_plan(plan, df, chart_coin, chart_tf,
-                                  account_balance, risk_pct)
+                render_trade_plan(plan, chart_coin, chart_tf)
         else:
-            st.error(f"❌ Tidak bisa mendapatkan data untuk {chart_coin}")
+            st.error(f"❌ Tidak bisa mengambil data {chart_coin}")
 
 # ==================== TAB 3: BACKTEST ====================
 with tab3:
     st.subheader("🧪 Backtest Auto Trade Plan")
-    st.caption("Uji performa rule dengan data historis")
-
-    bt_coin = st.selectbox("Coin", st.session_state.watchlist, key="bt_coin")
-    bt_tf = st.selectbox("Timeframe", ["15m", "1h", "4h"], index=1, key="bt_tf")
-    b1, b2, b3 = st.columns(3)
-    bt_horizon = b1.slider("Horizon (candle)", 5, 50, 20)
-    bt_min_conf = b2.slider("Min Confidence", 1, 5, 2)
-    run_bt = b3.button("▶️ Run Backtest", use_container_width=True)
+    st.caption("Entry harus tersentuh (limit/stop), SL dicek lebih dulu dalam satu candle, partial TP 50% di TP1 "
+               "lalu SL ke breakeven, fee+slippage dihitung, tidak ada trade tumpang tindih. Hasil dalam R.")
+    q = st.columns(3)
+    bt_coin = q[0].selectbox("Coin", st.session_state.watchlist, key="bt_coin")
+    bt_tf = q[1].selectbox("Timeframe", ["15m", "1h", "4h"], index=1, key="bt_tf")
+    bt_conf = q[2].slider("Min Confidence", 1, 5, 3, key="bt_conf")
+    q = st.columns(4)
+    bt_hold = q[0].slider("Max hold (candle)", 5, 100, 24)
+    bt_fill = q[1].slider("Validitas order (candle)", 2, 30, 8)
+    bt_step = q[2].slider("Step scan (candle)", 1, 6, 2)
+    run_bt = q[3].button("▶️ Run Backtest", width="stretch")
 
     if run_bt:
-        with st.spinner("Running backtest..."):
-            df_bt = get_data_safe(bt_coin, bt_tf, min_candles=300)
-            if df_bt is not None:
-                bt, stats = backtest_trade_plan(df_bt, bt_coin,
-                                                horizon=bt_horizon, min_conf=bt_min_conf)
-                if bt.empty:
-                    st.warning("Tidak ada sinyal dalam sample ini.")
-                else:
-                    q1, q2, q3, q4 = st.columns(4)
-                    q1.metric("Total Signals", stats["signals"])
-                    q2.metric("Wins", stats["wins"])
-                    q3.metric("Losses", stats["losses"])
-                    q4.metric("Win Rate", f"{stats['win_rate']:.1f}%")
-                    q1, q2 = st.columns(2)
-                    q1.metric("Avg Max Gain", f"{stats['avg_gain']:.2f}%")
-                    q2.metric("Avg Max DD", f"{stats['avg_dd']:.2f}%")
-                    st.dataframe(bt.sort_values("Date", ascending=False),
-                                 use_container_width=True, hide_index=True)
-            else:
+        with st.spinner("Running backtest (±1000 candle)..."):
+            df_bt = get_data(bt_coin, bt_tf, 1000)
+            if df_bt is None or len(df_bt) < 300:
                 st.error("Data tidak cukup.")
+            else:
+                bt, s = backtest_trade_plan(df_bt, bt_coin, bt_tf, cfg, bt_hold, bt_fill, bt_step, bt_conf)
+                if bt.empty or not s:
+                    st.warning("Tidak ada sinyal yang terisi pada sampel ini.")
+                else:
+                    m = st.columns(5)
+                    m[0].metric("Sinyal / Terisi", f"{s['signals']} / {s['n']}")
+                    m[1].metric("Win Rate", f"{s['win_rate']:.1f}%")
+                    m[2].metric("Expectancy", f"{s['avg_r']:+.2f}R")
+                    m[3].metric("Profit Factor", fmt_pf(s["pf"]))
+                    m[4].metric("Max Drawdown", f"{s['max_dd']:.2f}R")
+                    m = st.columns(3)
+                    m[0].metric("Total R", f"{s['total_r']:+.2f}R")
+                    m[1].metric("Fill rate", f"{s['fill_rate']:.0f}%")
+                    m[2].metric("Win / Loss", f"{s['wins']} / {s['losses']}")
+                    filled = bt[bt["Filled"]].sort_values("Date")
+                    st.plotly_chart(equity_chart(filled["R"].tolist(), "Equity curve (R)"), width="stretch")
+                    by = (filled.groupby("Setup")["R"].agg(["count", "mean", "sum"])
+                          .rename(columns={"count": "Trades", "mean": "Avg R", "sum": "Total R"}).round(2))
+                    st.markdown("**Per setup**")
+                    st.dataframe(by, width="stretch")
+                    st.dataframe(bt.sort_values("Date", ascending=False), width="stretch", hide_index=True)
+                    if s["n"] < 30:
+                        st.warning("⚠️ Sampel < 30 trade — hasil belum signifikan secara statistik.")
 
 # ==================== TAB 4: HISTORY ====================
 with tab4:
     st.subheader("📜 Signal History")
-    history = get_signal_history(limit=100)
-    if history:
-        df_history = pd.DataFrame(history)
-        if 'id' in df_history.columns:
-            df_history = df_history.drop('id', axis=1)
-        st.dataframe(df_history, use_container_width=True, hide_index=True)
-        csv = df_history.to_csv(index=False)
-        st.download_button("📥 Download CSV", csv,
-                           file_name=f"history_{datetime.now().strftime('%Y%m%d')}.csv",
-                           mime="text/csv")
+    hist = get_signal_history(300)
+    if hist:
+        dfh = pd.DataFrame(hist).drop(columns=["id"], errors="ignore")
+        st.dataframe(dfh, width="stretch", hide_index=True)
+        st.download_button("📥 Download CSV", dfh.to_csv(index=False), mime="text/csv",
+                           file_name=f"history_{utcnow().strftime('%Y%m%d')}.csv")
     else:
-        st.info("Belum ada sinyal")
+        st.info("Belum ada sinyal (atau database belum terhubung).")
 
 # ==================== TAB 5: PERFORMANCE ====================
 with tab5:
-    st.subheader("📊 Performance Statistics")
-    stats = get_performance()
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Signals", stats.get("total_signals", 0))
-    col2.metric("Wins", stats.get("wins", 0))
-    col3.metric("Losses", stats.get("losses", 0))
-    col4.metric("Win Rate", f"{stats.get('win_rate', 0):.1f}%")
-
+    st.subheader("📊 Performance Nyata (paper trade)")
+    st.caption("Dihitung dari sinyal yang benar-benar dikirim & dilacak, bukan hasil backtest.")
+    hist_all = get_signal_history(1000)
+    closed = [h for h in hist_all if h.get("status") in ("WIN", "LOSS", "TIMEOUT") and h.get("result_r") is not None]
+    closed.sort(key=lambda x: x["timestamp"])
+    s = perf_stats([h["result_r"] for h in closed])
+    m = st.columns(5)
+    m[0].metric("Trade selesai", s["n"])
+    m[1].metric("Win Rate", f"{s['win_rate']:.1f}%")
+    m[2].metric("Expectancy", f"{s['avg_r']:+.2f}R")
+    m[3].metric("Profit Factor", fmt_pf(s["pf"]))
+    m[4].metric("Max Drawdown", f"{s['max_dd']:.2f}R")
+    n_exp = sum(1 for h in hist_all if h.get("status") == "EXPIRED")
+    n_act = sum(1 for h in hist_all if h.get("status") in ("OPEN", "FILLED"))
+    st.caption(f"Aktif: {n_act} · Expired (entry tidak terisi): {n_exp} · Total R: {s['total_r']:+.2f}R")
+    if closed:
+        st.plotly_chart(equity_chart([h["result_r"] for h in closed], "Equity curve live (R)"), width="stretch")
+        dfc = pd.DataFrame(closed)
+        by = (dfc.groupby("setup_type")["result_r"].agg(["count", "mean", "sum"])
+              .rename(columns={"count": "Trades", "mean": "Avg R", "sum": "Total R"}).round(2))
+        st.dataframe(by, width="stretch")
     st.divider()
-    st.subheader("📈 Auto Trade Plan Rules")
     st.markdown("""
-    **🅰️ BUY THE DIP** — Entry di Fib 0.5/0.618 + validasi MACD
-    - RR minimum 1.5, SL max 8%, volume minimum 0.5x
+**Aturan setup (long-only)**
+- 🅰️ **BUY THE DIP** — uptrend swing, harga di Fib 0.618/0.5, MACD tidak bearish
+- 🅱️ **BREAKOUT** — buy-stop di atas resistance, wajib MACD tidak bearish & RVOL ≥ 1
+- 🅲 **LIQUIDITY GRAB** — harga di zona SSL, StochRSI K ≤ 60, MACD tidak bearish
+- ⏳ **WAIT** — volume rendah, RR < minimum, SL terlalu jauh, tren TF besar bearish, atau tidak ada setup
 
-    **🅱️ BREAKOUT BUY** — Entry setelah tembus resistance/swing high
-    - Wajib RR ≥ 1.5, SL valid (SL < entry)
-
-    **🅲 LIQUIDITY GRAB** — Entry setelah sweep SSL
-    - MACD harus tidak bearish
-    - TP harus di atas entry (arah valid)
-
-    **⏳ WAIT** — Tidak ada setup valid → tidak entry
-    - Volume < 0.5x, RR < 1.5, SL > 8%, TP arah salah, MACD melawan
-    """)
-
-# =========================================================
-# FOOTER
-# =========================================================
-st.divider()
-st.caption("""
-🔄 Yahoo Finance | Timeframes: 15M, 1H, 4H  
-📊 MACD + Stochastic RSI + EMA20/50 + Volume  
-📐 Fibonacci + Liquidity + S/R + Auto Trade Plan  
-💾 Supabase PostgreSQL
+Model eksekusi: 50% keluar di TP1, SL geser ke breakeven, sisa ke TP2. Fee+slippage dihitung.
 """)
+
+st.divider()
+st.caption("🔄 Binance (fallback Yahoo Finance) · 15M/1H/4H · MACD + StochRSI + EMA + ADX · Fib + Liquidity + S/R · "
+           "💾 Supabase · ⚠️ Alat bantu analisis, bukan saran finansial.")
