@@ -1262,7 +1262,7 @@ with st.sidebar:
 
     st.divider()
     st.subheader("💰 Position Sizing")
-    account_balance = st.number_input("Modal ($)", min_value=10.0, value=1000.0, step=100.0)
+    account_balance = st.number_input("Modal ($)", min_value=10.0, value=150.0, step=100.0)
     risk_pct = st.slider("Risk per trade (%)", 0.5, 5.0, 2.0, 0.5)
     st.caption(f"Max loss per trade: **${account_balance * risk_pct / 100:.2f}**")
 
