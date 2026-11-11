@@ -130,7 +130,10 @@ def get_watchlist():
     if sb is None:
         return ["BTC", "ETH", "SOL"]
     try:
-        res = sb.table("watchlist").select("symbol").order("added_at").execute()
+        try:
+            res = sb.table("watchlist").select("symbol").order("added_at").execute()
+        except Exception:
+            res = sb.table("watchlist").select("symbol").execute()
         return [r["symbol"] for r in res.data] if res.data else ["BTC"]
     except Exception as e:
         log.warning("get_watchlist: %s", e)
@@ -166,12 +169,12 @@ def plan_to_row(plan, source="auto"):
         "timestamp": utcnow().isoformat(),
         "symbol": plan["symbol"], "timeframe": plan["timeframe"],
         "setup_type": plan["setup_type"], "signal": plan["setup_label"],
-        "confidence": int(plan["confidence"]), "order_type": plan.get("order_type", "-"),
+        "order_type": plan.get("order_type", "-"),
         "entry": float(plan["entry"]), "sl": float(plan["stop_loss"]),
         "tp1": float(plan["tp1"]), "tp2": float(plan["tp2"]), "tp3": float(plan["tp3"]),
         "rr": float(plan["rr"]),
         "reasons": json.dumps(plan["reasons"], ensure_ascii=False),
-        "status": "OPEN", "source": source,
+        "status": "PENDING", "source": source,
     }
 
 
@@ -211,7 +214,8 @@ def get_active_signals():
     if sb is None:
         return []
     try:
-        res = sb.table("signal_history").select("*").in_("status", ["OPEN", "FILLED"]).execute()
+        res = (sb.table("signal_history").select("*")
+               .in_("status", ["PENDING", "OPEN", "FILLED"]).order("timestamp").execute())
         return res.data or []
     except Exception as e:
         log.warning("get_active_signals: %s", e)
@@ -361,7 +365,8 @@ def _fetch_binance(symbol, interval, limit):
 
 def _fetch_yf(symbol, interval, limit):
     yf_int = {"15m": "15m", "1h": "1h", "4h": "1h", "1d": "1d"}.get(interval)
-    period = {"15m": "30d", "1h": "90d", "4h": "180d", "1d": "1y"}.get(interval)
+    # Yahoo intraday has provider limits; Binance pagination is the 1-year source.
+    period = {"15m": "30d", "1h": "60d", "4h": "60d", "1d": "1y"}.get(interval)
     if not yf_int:
         return None
     try:
@@ -394,6 +399,49 @@ def get_data(symbol, interval, limit=500):
             return None
         return df.reset_index(drop=True)
     return _cached(("d", symbol, interval, limit), 30, _load)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_historical_data(symbol, interval="15m", days=365):
+    """Ambil candle historis dengan pagination Binance (maks. 1000 candle/request)."""
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - int(days * 86400 * 1000)
+    frames, cursor, errors = [], start_ms, []
+    for host in BINANCE_HOSTS:
+        frames, cursor = [], start_ms
+        try:
+            while cursor < end_ms:
+                params = {"symbol": f"{symbol}USDT", "interval": interval,
+                          "startTime": cursor, "endTime": end_ms, "limit": 1000}
+                response = requests.get(f"{host}/api/v3/klines", params=params, timeout=15)
+                response.raise_for_status()
+                raw = response.json()
+                if not raw:
+                    break
+                part = pd.DataFrame(raw, columns=["t", "Open", "High", "Low", "Close", "Volume",
+                                                  "ct", "qv", "n", "tb", "tq", "ig"])
+                part["Time"] = pd.to_datetime(part["t"], unit="ms")
+                for col in ["Open", "High", "Low", "Close", "Volume"]:
+                    part[col] = pd.to_numeric(part[col], errors="coerce")
+                frames.append(part[["Time", "Open", "High", "Low", "Close", "Volume"]])
+                next_cursor = int(raw[-1][0]) + 1
+                if next_cursor <= cursor:
+                    break
+                cursor = next_cursor
+                if len(raw) < 1000:
+                    break
+            if frames:
+                out = pd.concat(frames, ignore_index=True).drop_duplicates("Time").sort_values("Time")
+                return out.reset_index(drop=True)
+        except Exception as exc:
+            errors.append(f"{host}: {exc}")
+            log.warning("historical Binance %s %s: %s", symbol, host, exc)
+    # Explicit fallback: provider-limited data, never pretend it covers the requested year.
+    fallback = _fetch_yf(symbol, interval, max(1000, days * 96))
+    if fallback is not None and not fallback.empty:
+        return fallback.reset_index(drop=True)
+    log.warning("historical data unavailable %s %s (%s)", symbol, interval, "; ".join(errors))
+    return pd.DataFrame(columns=["Time", "Open", "High", "Low", "Close", "Volume"])
 
 
 # =========================================================
@@ -786,7 +834,7 @@ def analyze_mtf(symbol, cfg, balance, risk_pct):
 # Model: entry terisi saat harga menyentuh entry; 50% keluar di TP1 lalu SL geser ke BE;
 # sisa 50% ke TP2. Dalam satu candle, SL dianggap kena lebih dulu (konservatif).
 # =========================================================
-def simulate_trade(fut, entry, sl, tp1, tp2, fill_window=None, max_hold=None, fee_pct=0.2, force_close=False):
+def simulate_trade(fut, entry, sl, tp1, tp2, fill_window=None, max_hold=None, fee_pct=0.2, force_close=False, order_type="LIMIT"):
     risk = entry - sl
     if risk <= 0 or len(fut) == 0:
         return {"status": "INVALID", "r": 0.0, "filled": False, "bars": 0}
@@ -800,7 +848,9 @@ def simulate_trade(fut, entry, sl, tp1, tp2, fill_window=None, max_hold=None, fe
         if not filled:
             if fill_window is not None and i >= fill_window:
                 return {"status": "NOT_FILLED", "r": 0.0, "filled": False, "bars": i}
-            if L[i] <= entry <= H[i]:
+            order = str(order_type or "LIMIT").upper()
+            touched = (H[i] >= entry) if order == "STOP" else ((L[i] <= entry) if order == "LIMIT" else True)
+            if touched:
                 filled, fill_i = True, i
                 if L[i] <= sl:
                     return {"status": "LOSS", "r": -1 - cost, "filled": True, "bars": i + 1}
@@ -869,7 +919,8 @@ def backtest_trade_plan(df, symbol, tf, cfg, horizon=24, fill_window=8, step=2, 
             if len(fut) < 2:
                 break
             sim = simulate_trade(fut, plan["entry"], plan["stop_loss"], plan["tp1"], plan["tp2"],
-                                 fill_window, horizon, cfg["fee_pct"], force_close=True)
+                                 fill_window, horizon, cfg["fee_pct"], force_close=True,
+                                 order_type=plan.get("order_type", "LIMIT"))
             rows.append({"Date": df["Time"].iloc[i], "Setup": plan["setup_type"], "Conf": plan["confidence"],
                          "Order": plan["order_type"], "Entry": plan["entry"], "SL": plan["stop_loss"],
                          "TP1": plan["tp1"], "TP2": plan["tp2"], "RR": plan["rr"],
@@ -890,33 +941,118 @@ def backtest_trade_plan(df, symbol, tf, cfg, horizon=24, fill_window=8, step=2, 
 # =========================================================
 # TRACKER (paper trading) — update status sinyal aktif
 # =========================================================
+def _paper_simulation(candles, row):
+    """Long-only paper execution. SL wins ties when TP and SL touch in one candle."""
+    entry, sl = float(row["entry"]), float(row["sl"])
+    tp1, tp2 = float(row["tp1"]), float(row["tp2"])
+    order = str(row.get("order_type") or "LIMIT").upper()
+    risk = entry - sl
+    if risk <= 0 or candles is None or candles.empty:
+        return {"status": "PENDING", "r": 0.0, "filled": False, "tp1_hit": False}
+    cost_r = entry * DEFAULT_CFG["fee_pct"] / 100 / risk
+    filled, tp1_hit, realized_r = False, False, 0.0
+    fill_time = None
+    fill_index = None
+    max_pending_bars, max_hold_bars = 192, 672
+    for bar_index, bar in enumerate(candles.itertuples(index=False)):
+        high, low, close = float(bar.High), float(bar.Low), float(bar.Close)
+        if not filled:
+            if order == "STOP":
+                touched = high >= entry
+            elif order == "MARKET":
+                touched = True
+            else:
+                touched = low <= entry
+            if not touched:
+                if bar_index + 1 >= max_pending_bars:
+                    return {"status": "EXPIRED", "r": 0.0, "filled": False, "tp1_hit": False}
+                continue
+            filled, fill_time, fill_index = True, bar.Time, bar_index
+            # Conservative same-candle handling after entry.
+            if low <= sl:
+                return {"status": "LOSS", "r": -1.0 - cost_r, "filled": True,
+                        "tp1_hit": False, "entry_filled_at": str(fill_time)}
+            if high >= tp1:
+                tp1_hit = True
+                realized_r = 0.5 * ((tp1 - entry) / risk)
+                if low <= entry:
+                    return {"status": "WIN", "r": realized_r - cost_r, "filled": True,
+                            "tp1_hit": True, "entry_filled_at": str(fill_time)}
+                if high >= tp2:
+                    return {"status": "WIN", "r": realized_r + 0.5 * ((tp2-entry)/risk) - cost_r,
+                            "filled": True, "tp1_hit": True, "entry_filled_at": str(fill_time)}
+            continue
+        if fill_index is not None and bar_index - fill_index >= max_hold_bars:
+            last_close = close
+            mtm = (last_close - entry) / risk
+            r_now = realized_r + (0.5 if tp1_hit else 1.0) * mtm - cost_r
+            return {"status": "TIMEOUT", "r": r_now, "filled": True,
+                    "tp1_hit": tp1_hit, "entry_filled_at": str(fill_time)}
+        if not tp1_hit:
+            if low <= sl:
+                return {"status": "LOSS", "r": -1.0 - cost_r, "filled": True,
+                        "tp1_hit": False, "entry_filled_at": str(fill_time)}
+            if high >= tp1:
+                tp1_hit = True
+                realized_r = 0.5 * ((tp1 - entry) / risk)
+                if low <= entry:
+                    return {"status": "WIN", "r": realized_r - cost_r, "filled": True,
+                            "tp1_hit": True, "entry_filled_at": str(fill_time)}
+                if high >= tp2:
+                    return {"status": "WIN", "r": realized_r + 0.5 * ((tp2-entry)/risk) - cost_r,
+                            "filled": True, "tp1_hit": True, "entry_filled_at": str(fill_time)}
+        else:
+            # After TP1, stop is moved to breakeven; conservative stop-first tie handling.
+            if low <= entry:
+                return {"status": "WIN", "r": realized_r - cost_r, "filled": True,
+                        "tp1_hit": True, "entry_filled_at": str(fill_time)}
+            if high >= tp2:
+                return {"status": "WIN", "r": realized_r + 0.5 * ((tp2-entry)/risk) - cost_r,
+                        "filled": True, "tp1_hit": True, "entry_filled_at": str(fill_time)}
+    if not filled:
+        return {"status": "PENDING", "r": 0.0, "filled": False, "tp1_hit": False}
+    last_close = float(candles["Close"].iloc[-1])
+    mtm = (last_close - entry) / risk
+    r_now = realized_r + (0.5 if tp1_hit else 1.0) * mtm - cost_r
+    return {"status": "FILLED" if not tp1_hit else "FILLED", "r": r_now,
+            "filled": True, "tp1_hit": tp1_hit, "entry_filled_at": str(fill_time)}
+
+
 def update_active_signals(send_tg=False):
+    """Update active signals independently from scanner; replay complete candle history idempotently."""
     changed = 0
     for row in get_active_signals():
         try:
-            ts = pd.to_datetime(row["timestamp"])
-            df = get_data(row["symbol"], "15m", 1000)
-            if df is None:
+            tf = row.get("timeframe") or "15m"
+            if tf not in ("15m", "1h", "4h"):
+                tf = "15m"
+            ts = pd.to_datetime(row["timestamp"], utc=True).tz_convert(None)
+            # Full range from signal creation avoids the old latest-1000-candle blind spot.
+            days = max(2, min(365, int((utcnow() - ts).total_seconds() / 86400) + 2))
+            df = get_historical_data(row["symbol"], tf, days)
+            if df is None or df.empty:
                 continue
-            fut = df[df["Time"] > ts]
+            fut = df[df["Time"] > ts].copy()
             if fut.empty:
                 continue
-            sim = simulate_trade(fut, row["entry"], row["sl"], row["tp1"], row["tp2"],
-                                 fill_window=192, max_hold=672, fee_pct=DEFAULT_CFG["fee_pct"])
-            new = {"PENDING": "OPEN", "RUNNING": "FILLED", "NOT_FILLED": "EXPIRED"}.get(sim["status"], sim["status"])
-            if new == row.get("status"):
-                continue
-            fields = {"status": new}
-            if new in ("WIN", "LOSS", "TIMEOUT", "EXPIRED"):
-                fields.update({"result_r": round(float(sim["r"]), 3), "closed_at": utcnow().isoformat()})
-            if update_signal(row["id"], fields):
+            sim = _paper_simulation(fut, row)
+            new_status = sim["status"]
+            old_status = row.get("status")
+            fields = {}
+            if new_status != old_status:
+                fields["status"] = new_status
+            # Only write columns guaranteed by the existing signal_history schema.
+            if new_status in ("WIN", "LOSS", "TIMEOUT", "EXPIRED"):
+                fields.update({"result_r": round(float(sim["r"]), 4),
+                               "closed_at": row.get("closed_at") or utcnow().isoformat()})
+            if fields and update_signal(row["id"], fields):
                 changed += 1
-                if send_tg and new in ("WIN", "LOSS", "TIMEOUT"):
-                    icon = {"WIN": "✅", "LOSS": "🛑", "TIMEOUT": "⌛"}[new]
-                    send_telegram(f"{icon} <b>{esc(row['symbol'])}</b> {esc(row.get('timeframe', ''))} "
-                                  f"{esc(row.get('signal', ''))}\nHasil: <b>{new}</b> ({sim['r']:+.2f}R)")
-        except Exception as e:
-            log.warning("update_active_signals: %s", e)
+                if send_tg and new_status in ("WIN", "LOSS", "TIMEOUT") and old_status not in ("WIN", "LOSS", "TIMEOUT"):
+                    icon = {"WIN": "✅", "LOSS": "🛑", "TIMEOUT": "⌛"}[new_status]
+                    send_telegram(f"{icon} <b>{esc(row['symbol'])}</b> {esc(tf)} "
+                                  f"{esc(row.get('signal', ''))}\nHasil: <b>{new_status}</b> ({sim['r']:+.2f}R)")
+        except Exception as exc:
+            log.exception("update_active_signals id=%s: %s", row.get("id"), exc)
     return changed
 
 
@@ -928,7 +1064,9 @@ def process_alerts(results, cfg, send_tg):
             continue
         if already_alerted(sym, bp["setup_type"], cfg["cooldown_min"]):
             continue
-        save_signal(plan_to_row(bp))
+        if not save_signal(plan_to_row(bp)):
+            log.warning("Signal %s %s tidak tersimpan; alert dilewati", sym, bp["setup_type"])
+            continue
         st.session_state.alert_times[(sym, bp["setup_type"])] = utcnow()
         if send_tg:
             ok, err = send_telegram(format_plan_for_telegram(bp))
@@ -1142,6 +1280,8 @@ with st.sidebar:
     st.divider()
     st.subheader("🔄 Scanner")
     auto_on = st.toggle("Auto scan & refresh", value=False)
+    paper_auto = st.toggle("Auto update Paper Trading", value=True,
+                           help="Tracker berjalan terpisah dari scanner selama aplikasi Streamlit terbuka.")
     refresh = st.slider("Interval (detik)", 30, 300, 60, 10)
 
     st.divider()
@@ -1152,13 +1292,25 @@ with st.sidebar:
                                 f"🕐 {utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
         st.success("✅ Test terkirim!") if ok else st.error(f"❌ {err}")
 
-if auto_on:
-    st_autorefresh(interval=refresh * 1000, key="refresh")
+if auto_on or paper_auto:
+    st_autorefresh(interval=refresh * 1000, key="app_refresh")
 
 # =========================================================
 # TABS
 # =========================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Scanner", "📈 Chart + Plan", "🧪 Backtest", "📋 History", "📊 Performance"])
+tab0, tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "🏠 Overview", "📊 Scanner", "📈 Chart + Plan", "🗂 Historical Data",
+    "🧪 Backtest", "📋 Paper Trading", "📜 Trade History", "📊 Analytics"
+])
+
+# Tracker is deliberately independent from scanner execution.
+if db_ok():
+    try:
+        n_tracker_updates = update_active_signals(send_tg)
+        if n_tracker_updates:
+            st.toast(f"📌 {n_tracker_updates} paper trade diperbarui")
+    except Exception as tracker_error:
+        log.exception("Paper tracker global error: %s", tracker_error)
 
 
 def run_scan(symbols):
@@ -1170,6 +1322,41 @@ def run_scan(symbols):
             return s, None
     with ThreadPoolExecutor(max_workers=6) as ex:
         return dict(ex.map(one, symbols))
+
+
+# ==================== TAB 0: OVERVIEW ====================
+with tab0:
+    st.subheader("🏠 System Overview")
+    all_rows = get_signal_history(1000)
+    active_rows = [x for x in all_rows if x.get("status") in ("PENDING", "OPEN", "FILLED")]
+    closed_rows = [x for x in all_rows if x.get("status") in ("WIN", "LOSS", "TIMEOUT") and x.get("result_r") is not None]
+    pending_rows = [x for x in active_rows if x.get("status") == "PENDING"]
+    filled_rows = [x for x in active_rows if x.get("status") in ("OPEN", "FILLED")]
+    stats = perf_stats([x["result_r"] for x in closed_rows])
+    k = st.columns(5)
+    k[0].metric("Watchlist", len(st.session_state.watchlist))
+    k[1].metric("Pending", len(pending_rows))
+    k[2].metric("Posisi aktif", len(filled_rows))
+    k[3].metric("Trade selesai", len(closed_rows))
+    k[4].metric("Win rate", f"{stats['win_rate']:.1f}%")
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**Koneksi & status sistem**")
+        st.write("Supabase:", "🟢 Connected" if db_ok() else "🔴 Disconnected")
+        st.write("Market data:", "Binance API → Yahoo Finance fallback")
+        st.write("Tracker:", "Refresh independen dari scanner (selama aplikasi terbuka)")
+        st.write("Mode:", "Spot / long-only paper trading")
+    with right:
+        st.markdown("**Ringkasan hasil paper trading**")
+        st.metric("Expectancy", f"{stats['avg_r']:+.3f}R")
+        st.metric("Profit factor", fmt_pf(stats["pf"]))
+        st.metric("Total R", f"{stats['total_r']:+.2f}R")
+    if not db_ok():
+        st.warning("Supabase belum tersambung. Signal history dan paper trading tidak akan tersimpan persisten.")
+    if all_rows:
+        st.markdown("**Aktivitas terbaru**")
+        st.dataframe(pd.DataFrame(all_rows[:10]).drop(columns=["id"], errors="ignore"),
+                     width="stretch", hide_index=True)
 
 
 # ==================== TAB 1: SCANNER ====================
@@ -1185,11 +1372,8 @@ with tab1:
             st.session_state.scan_results = run_scan(st.session_state.watchlist[:50])
             st.session_state.scan_ts = time.time()
             n_alert = process_alerts(st.session_state.scan_results, cfg, send_tg)
-            n_upd = update_active_signals(send_tg)
         if n_alert:
             st.toast(f"🔔 {n_alert} sinyal baru")
-        if n_upd:
-            st.toast(f"📌 {n_upd} sinyal aktif berubah status")
 
     results = {k: v for k, v in st.session_state.scan_results.items() if v}
     if results:
@@ -1223,7 +1407,7 @@ with tab1:
             cur = float(d15["Close"].iloc[-1]) if d15 is not None else None
             rows.append({"Waktu (UTC)": str(s["timestamp"])[:16].replace("T", " "), "Coin": s["symbol"],
                          "TF": s.get("timeframe"), "Setup": s.get("signal"), "Status": s.get("status"),
-                         "Conf": f"{s.get('confidence', 0)}⭐", "Order": s.get("order_type"),
+                         "Order": s.get("order_type"),
                          "Current": format_price(cur), "Entry": format_price(s["entry"]),
                          "Jarak": f"{(s['entry'] / cur - 1) * 100:+.2f}%" if cur else "-",
                          "SL": format_price(s["sl"]), "TP1": format_price(s["tp1"]),
@@ -1271,8 +1455,39 @@ with tab2:
         else:
             st.error(f"❌ Tidak bisa mengambil data {chart_coin}")
 
-# ==================== TAB 3: BACKTEST ====================
+# ==================== TAB 3: HISTORICAL DATA ====================
 with tab3:
+    st.subheader("🗂 Historical OHLCV Data")
+    st.caption("Binance Spot klines dengan pagination. Target 1 tahun: 15m ≈ 35.040 candle; 1h ≈ 8.760; 4h ≈ 2.190.")
+    hc = st.columns(4)
+    hd_coin = hc[0].selectbox("Coin", st.session_state.watchlist, key="hd_coin")
+    hd_tf = hc[1].selectbox("Timeframe", ["15m", "1h", "4h"], key="hd_tf")
+    hd_days = hc[2].selectbox("Rentang", [30, 90, 180, 365], index=3, format_func=lambda x: f"{x} hari")
+    hd_load = hc[3].button("Ambil data", key="hd_load", width="stretch")
+    if hd_load:
+        with st.spinner("Mengambil candle historis dari Binance..."):
+            hdf = get_historical_data(hd_coin, hd_tf, hd_days)
+            st.session_state["historical_preview"] = hdf
+            st.session_state["historical_meta"] = (hd_coin, hd_tf, hd_days)
+    hdf = st.session_state.get("historical_preview")
+    if hdf is not None and not hdf.empty:
+        meta = st.session_state.get("historical_meta", (hd_coin, hd_tf, hd_days))
+        expected = {"15m": 96, "1h": 24, "4h": 6}[meta[1]] * meta[2]
+        st.columns(4)[0].metric("Jumlah candle", f"{len(hdf):,}")
+        st.columns(4)[1].metric("Target teoritis", f"{expected:,}")
+        st.columns(4)[2].metric("Mulai", str(hdf["Time"].iloc[0]))
+        st.columns(4)[3].metric("Akhir", str(hdf["Time"].iloc[-1]))
+        coverage = min(100.0, len(hdf) / expected * 100) if expected else 0
+        st.progress(coverage / 100, text=f"Coverage estimasi: {coverage:.1f}%")
+        st.dataframe(hdf.tail(500), width="stretch", hide_index=True)
+        st.download_button("Download OHLCV CSV", hdf.to_csv(index=False),
+                           file_name=f"{meta[0]}_{meta[1]}_{meta[2]}d.csv", mime="text/csv")
+    elif hd_load:
+        st.error("Data historis tidak berhasil diambil. Periksa simbol, koneksi, atau Binance API.")
+
+
+# ==================== TAB 4: BACKTEST ====================
+with tab4:
     st.subheader("🧪 Backtest Auto Trade Plan")
     st.caption("Entry harus tersentuh (limit/stop), SL dicek lebih dulu dalam satu candle, partial TP 50% di TP1 "
                "lalu SL ke breakeven, fee+slippage dihitung, tidak ada trade tumpang tindih. Hasil dalam R.")
@@ -1316,9 +1531,37 @@ with tab3:
                     if s["n"] < 30:
                         st.warning("⚠️ Sampel < 30 trade — hasil belum signifikan secara statistik.")
 
-# ==================== TAB 4: HISTORY ====================
-with tab4:
-    st.subheader("📜 Signal History")
+# ==================== TAB 5: PAPER TRADING ====================
+with tab5:
+    st.subheader("📋 Paper Trading Monitor")
+    st.caption("PENDING = entry belum tersentuh · FILLED = posisi sudah aktif · WIN/LOSS/TIMEOUT = selesai.")
+    if st.button("🔄 Update tracker sekarang", key="manual_tracker"):
+        count = update_active_signals(send_tg)
+        st.success(f"Tracker selesai. {count} record diperbarui.")
+    active_now = get_active_signals()
+    if active_now:
+        table = []
+        for item in active_now:
+            table.append({"ID": item.get("id"), "Timestamp": item.get("timestamp"),
+                          "Symbol": item.get("symbol"), "TF": item.get("timeframe"),
+                          "Setup": item.get("signal"), "Status": item.get("status"),
+                          "Order": item.get("order_type"), "Entry": item.get("entry"),
+                          "SL": item.get("sl"), "TP1": item.get("tp1"), "TP2": item.get("tp2"),
+                          "TP3": item.get("tp3")})
+        st.dataframe(pd.DataFrame(table), width="stretch", hide_index=True)
+    else:
+        st.info("Tidak ada paper trade aktif.")
+    st.divider()
+    st.markdown("**Catatan eksekusi**")
+    st.write("• Entry LIMIT dianggap terisi saat Low menyentuh entry.")
+    st.write("• Entry STOP dianggap terisi saat High menyentuh entry.")
+    st.write("• Jika SL dan target tersentuh pada candle yang sama, simulasi memilih SL terlebih dahulu.")
+    st.write("• Setelah TP1, 50% posisi direalisasikan dan stop sisa posisi pindah ke breakeven.")
+
+
+# ==================== TAB 6: TRADE HISTORY ====================
+with tab6:
+    st.subheader("📜 Trade History & Signal Log")
     hist = get_signal_history(300)
     if hist:
         dfh = pd.DataFrame(hist).drop(columns=["id"], errors="ignore")
@@ -1328,8 +1571,8 @@ with tab4:
     else:
         st.info("Belum ada sinyal (atau database belum terhubung).")
 
-# ==================== TAB 5: PERFORMANCE ====================
-with tab5:
+# ==================== TAB 7: ANALYTICS ====================
+with tab7:
     st.subheader("📊 Performance Nyata (paper trade)")
     st.caption("Dihitung dari sinyal yang benar-benar dikirim & dilacak, bukan hasil backtest.")
     hist_all = get_signal_history(1000)
@@ -1343,8 +1586,9 @@ with tab5:
     m[3].metric("Profit Factor", fmt_pf(s["pf"]))
     m[4].metric("Max Drawdown", f"{s['max_dd']:.2f}R")
     n_exp = sum(1 for h in hist_all if h.get("status") == "EXPIRED")
-    n_act = sum(1 for h in hist_all if h.get("status") in ("OPEN", "FILLED"))
-    st.caption(f"Aktif: {n_act} · Expired (entry tidak terisi): {n_exp} · Total R: {s['total_r']:+.2f}R")
+    n_act = sum(1 for h in hist_all if h.get("status") in ("PENDING", "OPEN", "FILLED"))
+    n_pending = sum(1 for h in hist_all if h.get("status") == "PENDING")
+    st.caption(f"Pending: {n_pending} · Posisi terisi: {n_act - n_pending} · Expired: {n_exp} · Total R: {s['total_r']:+.2f}R")
     if closed:
         st.plotly_chart(equity_chart([h["result_r"] for h in closed], "Equity curve live (R)"), width="stretch")
         dfc = pd.DataFrame(closed)
@@ -1363,5 +1607,5 @@ Model eksekusi: 50% keluar di TP1, SL geser ke breakeven, sisa ke TP2. Fee+slipp
 """)
 
 st.divider()
-st.caption("🔄 Binance (fallback Yahoo Finance) · 15M/1H/4H · MACD + StochRSI + EMA + ADX · Fib + Liquidity + S/R · "
-           "💾 Supabase · ⚠️ Alat bantu analisis, bukan saran finansial.")
+st.caption("🔄 Binance paginated OHLCV (fallback Yahoo Finance) · 15M/1H/4H · MACD + StochRSI + EMA + ADX · "
+           "Fib + Liquidity + S/R · 💾 Supabase · Paper trading long-only · ⚠️ Bukan saran finansial.")
